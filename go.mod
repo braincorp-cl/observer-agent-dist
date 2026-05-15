@@ -1,4 +1,4 @@
-module github.com/amidaware/rmmagent
+module github.com/braincorp/observeragent
 
 go 1.20
 

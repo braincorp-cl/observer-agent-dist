@@ -19,7 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/amidaware/rmmagent/agent"
+	"github.com/braincorp/observeragent/agent"
 	"github.com/kardianos/service"
 	"github.com/sirupsen/logrus"
 )
@@ -186,9 +186,9 @@ func setupLogging(level, to *string) {
 	} else {
 		switch runtime.GOOS {
 		case "windows":
-			logFile, _ = os.OpenFile(filepath.Join(os.Getenv("ProgramFiles"), "TacticalAgent", "agent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
+			logFile, _ = os.OpenFile(filepath.Join(os.Getenv("ProgramFiles"), "ObserverAgent", "agent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
 		default:
-			logFile, _ = os.OpenFile(filepath.Join("/var/log/", "tacticalagent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
+			logFile, _ = os.OpenFile(filepath.Join("/var/log/", "observeragent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
 		}
 		log.SetOutput(logFile)
 	}

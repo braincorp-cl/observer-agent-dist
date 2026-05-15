@@ -1,8 +1,8 @@
-#define MyAppName "Tactical RMM Agent"
+#define MyAppName "Observer RMM Agent"
 #define MyAppVersion "2.10.0"
-#define MyAppPublisher "AmidaWare Inc"
-#define MyAppURL "https://github.com/amidaware"
-#define MyAppExeName "tacticalrmm.exe"
+#define MyAppPublisher "BRAINCORP OP SPA"
+#define MyAppURL "https://github.com/braincorp"
+#define MyAppExeName "observeragent.exe"
 #define MESHEXE "meshagent.exe"
 #define MESHDIR "{sd}\Program Files\Mesh Agent"
 
@@ -15,7 +15,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName="{sd}\Program Files\TacticalAgent"
+DefaultDirName="{sd}\Program Files\ObserverAgent"
 DisableDirPage=yes
 SetupLogging=yes
 DisableProgramGroupPage=yes
@@ -29,21 +29,21 @@ RestartApplications=no
 CloseApplications=no
 MinVersion=6.1
 VersionInfoVersion=2.10.0.0
-VersionInfoOriginalFileName=tacticalrmm.exe
+VersionInfoOriginalFileName=observeragent.exe
 AppCopyright="Copyright (C) 2025 {#MyAppPublisher}"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "C:\Users\Public\Documents\agent\tacticalrmm.exe"; DestDir: "{app}"; Flags: ignoreversion;
+Source: "C:\Users\Public\Documents\agent\observeragent.exe"; DestDir: "{app}"; Flags: ignoreversion;
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "-m cleanup"; RunOnceId: "cleanuprm";
-Filename: "{cmd}"; Parameters: "/c taskkill /F /IM tacticalrmm.exe"; RunOnceId: "killtacrmm";
+Filename: "{cmd}"; Parameters: "/c taskkill /F /IM observeragent.exe"; RunOnceId: "killobsagent";
 Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall"; RunOnceId: "meshrm";
 
 [UninstallDelete]
@@ -55,10 +55,10 @@ function InitializeSetup(): boolean;
 var
   ResultCode: Integer;
 begin
-  Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop tacticalrmm', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Log('Stop tacticalrmm: ' + IntToStr(ResultCode));
+  Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop observeragent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log('Stop observeragent: ' + IntToStr(ResultCode));
 
-  Exec('cmd.exe', '/c taskkill /F /IM tacticalrmm.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('cmd.exe', '/c taskkill /F /IM observeragent.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log('taskkill: ' + IntToStr(ResultCode));
 
   Result := True;
@@ -70,23 +70,23 @@ var
   WorkingDir:   String;
 begin
 
-  WorkingDir := ExpandConstant('{sd}\Program Files\TacticalAgent');
-  Exec('cmd.exe', ' /c tacticalrmm.exe -m installsvc', WorkingDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  WorkingDir := ExpandConstant('{sd}\Program Files\ObserverAgent');
+  Exec('cmd.exe', ' /c observeragent.exe -m installsvc', WorkingDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log('install service: ' + IntToStr(ResultCode));
 
-  Exec('cmd.exe', '/c net start tacticalrmm', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Log('Start tacticalrmm: ' + IntToStr(ResultCode));
+  Exec('cmd.exe', '/c net start observeragent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log('Start observeragent: ' + IntToStr(ResultCode));
 end;
 
 function InitializeUninstall(): Boolean;
 var
   ResultCode: Integer;
 begin
-  Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop tacticalrmm', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec('cmd.exe', '/c taskkill /F /IM tacticalrmm.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop observeragent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('cmd.exe', '/c taskkill /F /IM observeragent.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  Exec('cmd.exe', '/c sc delete tacticalrmm', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Log('delete tacticalrmm: ' + IntToStr(ResultCode));
+  Exec('cmd.exe', '/c sc delete observeragent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log('delete observeragent: ' + IntToStr(ResultCode));
 
   Result := True;
 end;

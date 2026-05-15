@@ -31,7 +31,7 @@ import (
 
 	"time"
 
-	rmm "github.com/amidaware/rmmagent/shared"
+	rmm "github.com/braincorp/observeragent/shared"
 	ps "github.com/elastic/go-sysinfo"
 	gocmd "github.com/go-cmd/cmd"
 	"github.com/go-resty/resty/v2"
@@ -89,23 +89,23 @@ type Agent struct {
 }
 
 const (
-	progFilesName        = "TacticalAgent"
-	winExeName           = "tacticalrmm.exe"
-	winSvcName           = "tacticalrmm"
+	progFilesName        = "ObserverAgent"
+	winExeName           = "observeragent.exe"
+	winSvcName           = "observeragent"
 	meshSvcName          = "mesh agent"
-	etcConfig            = "/etc/tacticalagent"
-	nixAgentDir          = "/opt/tacticalagent"
+	etcConfig            = "/etc/observeragent"
+	nixAgentDir          = "/opt/observeragent"
 	nixMeshDir           = "/opt/tacticalmesh"
-	nixAgentBin          = nixAgentDir + "/tacticalagent"
+	nixAgentBin          = nixAgentDir + "/observeragent"
 	nixAgentBinDir       = nixAgentDir + "/bin"
 	nixAgentEtcDir       = nixAgentDir + "/etc"
 	nixMeshAgentBin      = nixMeshDir + "/meshagent"
-	macPlistPath         = "/Library/LaunchDaemons/tacticalagent.plist"
-	macPlistName         = "tacticalagent"
+	macPlistPath         = "/Library/LaunchDaemons/observeragent.plist"
+	macPlistName         = "observeragent"
 	defaultMacMeshSvcDir = "/usr/local/mesh_services"
 )
 
-var defaultWinTmpDir = filepath.Join(os.Getenv("PROGRAMDATA"), "TacticalRMM")
+var defaultWinTmpDir = filepath.Join(os.Getenv("PROGRAMDATA"), "ObserverRMM")
 var winMeshDir = filepath.Join(os.Getenv("PROGRAMFILES"), "Mesh Agent")
 var natsCheckin = []string{"agent-hello", "agent-agentinfo", "agent-disks", "agent-winsvc", "agent-publicip", "agent-wmi"}
 var limitNatsData = []string{"agent-winsvc", "agent-wmi"}
@@ -220,9 +220,9 @@ func New(logger *logrus.Logger, version string) *Agent {
 	svcConf := &service.Config{
 		Executable:  exe,
 		Name:        winSvcName,
-		DisplayName: "TacticalRMM Agent Service",
+		DisplayName: "Observer RMM Agent Service",
 		Arguments:   []string{"-m", "svc"},
-		Description: "TacticalRMM Agent Service",
+		Description: "Observer RMM Agent Service",
 		Option: service.KeyValue{
 			"StartType":              "automatic",
 			"OnFailure":              "restart",
@@ -630,7 +630,7 @@ func (a *Agent) CleanupAgentUpdates() {
 		}
 
 		// TODO winagent-v* is deprecated
-		globs := [3]string{"tacticalagent-v*", "is-*.tmp", "winagent-v*"}
+		globs := [3]string{"observeragent-v*", "is-*.tmp", "winagent-v*"}
 		for _, glob := range globs {
 			files, err := filepath.Glob(glob)
 			if err == nil {
@@ -644,7 +644,7 @@ func (a *Agent) CleanupAgentUpdates() {
 
 	err := os.Chdir(os.Getenv("TMP"))
 	if err == nil {
-		dirs, err := filepath.Glob("tacticalrmm*")
+		dirs, err := filepath.Glob("observeragent*")
 		if err == nil {
 			for _, f := range dirs {
 				os.RemoveAll(f)

@@ -30,7 +30,7 @@ import (
 	"time"
 	"unsafe"
 
-	rmm "github.com/amidaware/rmmagent/shared"
+	rmm "github.com/braincorp/observeragent/shared"
 	ps "github.com/elastic/go-sysinfo"
 	"github.com/fourcorelabs/wintoken"
 	"github.com/go-ole/go-ole"
