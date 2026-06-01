@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -224,7 +213,7 @@ func CleanupSchedTasks() {
 	}
 
 	for _, task := range tasks {
-		if strings.HasPrefix(task.Name, "TacticalRMM_") {
+		if strings.HasPrefix(task.Name, "ObserverRMM_") {
 			conn.DeleteTask(fmt.Sprintf("\\%s", task.Name))
 		}
 	}

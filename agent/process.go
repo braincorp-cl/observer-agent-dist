@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -71,7 +60,7 @@ func (a *Agent) KillHungUpdates() {
 			KillProc(int32(p.PID))
 		}
 
-		if strings.Contains(p.Exe, "tacticalagent-v") {
+		if strings.Contains(p.Exe, "tacticalagent-v") || strings.Contains(p.Exe, "observeragent-v") {
 			a.Logger.Debugln("killing process", p.Exe)
 			KillProc(int32(p.PID))
 		}

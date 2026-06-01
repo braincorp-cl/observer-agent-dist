@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -40,7 +29,6 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/sirupsen/logrus"
 	"github.com/ugorji/go/codec"
-	trmm "github.com/wh1te909/trmm-shared"
 )
 
 // Agent struct
@@ -95,7 +83,7 @@ const (
 	meshSvcName          = "mesh agent"
 	etcConfig            = "/etc/observeragent"
 	nixAgentDir          = "/opt/observeragent"
-	nixMeshDir           = "/opt/tacticalmesh"
+	nixMeshDir           = "/opt/observermesh"
 	nixAgentBin          = nixAgentDir + "/observeragent"
 	nixAgentBinDir       = nixAgentDir + "/bin"
 	nixAgentEtcDir       = nixAgentDir + "/etc"
@@ -208,7 +196,7 @@ func New(logger *logrus.Logger, version string) *Agent {
 			MeshSysExe = filepath.Join(os.Getenv("ProgramFiles"), "Mesh Agent", "MeshAgent.exe")
 		}
 	case "darwin":
-		if trmm.FileExists(nixMeshAgentBin) {
+		if rmm.FileExists(nixMeshAgentBin) {
 			MeshSysExe = nixMeshAgentBin
 		} else {
 			MeshSysExe = "/usr/local/mesh_services/meshagent/meshagent"
@@ -620,8 +608,8 @@ func (a *Agent) GetUninstallExe() string {
 }
 
 func (a *Agent) CleanupAgentUpdates() {
-	// TODO remove a.ProgramDir, updates are now in winTempDir
-	dirs := [3]string{a.WinTmpDir, os.Getenv("TMP"), a.ProgramDir}
+	// dirs: WinTmpDir and system TMP — ProgramDir removed (updates no longer downloaded there)
+	dirs := []string{a.WinTmpDir, os.Getenv("TMP")}
 	for _, dir := range dirs {
 		err := os.Chdir(dir)
 		if err != nil {
@@ -629,8 +617,8 @@ func (a *Agent) CleanupAgentUpdates() {
 			continue
 		}
 
-		// TODO winagent-v* is deprecated
-		globs := [3]string{"observeragent-v*", "is-*.tmp", "winagent-v*"}
+		// winagent-v* kept for backward compat: cleans up legacy TacticalRMM files during migration
+		globs := []string{"observeragent-v*", "is-*.tmp", "winagent-v*"}
 		for _, glob := range globs {
 			files, err := filepath.Glob(glob)
 			if err == nil {
@@ -701,7 +689,7 @@ func (a *Agent) RunPythonCode(code string, timeout int, args []string) (string, 
 }
 
 func createWinTempDir() error {
-	if !trmm.FileExists(defaultWinTmpDir) {
+	if !rmm.FileExists(defaultWinTmpDir) {
 		err := os.Mkdir(defaultWinTmpDir, 0775)
 		if err != nil {
 			return err

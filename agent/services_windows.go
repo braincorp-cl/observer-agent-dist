@@ -1,21 +1,9 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
 	"time"
 
 	rmm "github.com/braincorp/observeragent/shared"
-	trmm "github.com/wh1te909/trmm-shared"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -133,8 +121,8 @@ func (a *Agent) EditService(name, startupType string) rmm.WinSvcResp {
 	return rmm.WinSvcResp{Success: true, ErrorMsg: ""}
 }
 
-func (a *Agent) GetServiceDetail(name string) trmm.WindowsService {
-	ret := trmm.WindowsService{}
+func (a *Agent) GetServiceDetail(name string) rmm.WindowsService {
+	ret := rmm.WindowsService{}
 
 	conn, err := mgr.Connect()
 	if err != nil {
@@ -175,8 +163,8 @@ func (a *Agent) GetServiceDetail(name string) trmm.WindowsService {
 }
 
 // GetServices returns a list of windows services
-func (a *Agent) GetServices() []trmm.WindowsService {
-	ret := make([]trmm.WindowsService, 0)
+func (a *Agent) GetServices() []rmm.WindowsService {
+	ret := make([]rmm.WindowsService, 0)
 
 	conn, err := mgr.Connect()
 	if err != nil {
@@ -214,7 +202,7 @@ func (a *Agent) GetServices() []trmm.WindowsService {
 			continue
 		}
 
-		ret = append(ret, trmm.WindowsService{
+		ret = append(ret, rmm.WindowsService{
 			Name:             s,
 			Status:           serviceStatusText(uint32(q.State)),
 			DisplayName:      CleanString(conf.DisplayName),

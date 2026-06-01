@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -42,7 +31,6 @@ import (
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/ugorji/go/codec"
 	wapf "github.com/wh1te909/go-win64api"
-	trmm "github.com/wh1te909/trmm-shared"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -52,7 +40,7 @@ var (
 )
 
 func NewAgentConfig() *rmm.AgentConfig {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`, registry.ALL_ACCESS)
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`, registry.ALL_ACCESS)
 	if err != nil {
 		return &rmm.AgentConfig{}
 	}
@@ -173,7 +161,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 			nushellArgs = []string{"--no-config-file"}
 		}
 		cmdArgs = append(nushellArgs, tmpfn.Name())
-		if !trmm.FileExists(a.NuBin) {
+		if !rmm.FileExists(a.NuBin) {
 			a.Logger.Errorln("RunScript(): Executable does not exist. Install Nu and try again:", a.NuBin)
 			err := errors.New("File Not Found: " + a.NuBin)
 			return "", err.Error(), 85, err
@@ -181,7 +169,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 	case "deno":
 		exe = a.DenoBin
 		cmdArgs = []string{"run", "--no-prompt"}
-		if !trmm.FileExists(a.DenoBin) {
+		if !rmm.FileExists(a.DenoBin) {
 			a.Logger.Errorln("RunScript(): Executable does not exist. Install deno and try again:", a.DenoBin)
 			err := errors.New("File Not Found: " + a.DenoBin)
 			return "", err.Error(), 85, err
@@ -465,8 +453,8 @@ func streamLines(pipe io.ReadCloser, agentID string, cmdID string, nc *nats.Conn
 }
 
 // GetDisks returns a list of fixed disks
-func (a *Agent) GetDisks() []trmm.Disk {
-	ret := make([]trmm.Disk, 0)
+func (a *Agent) GetDisks() []rmm.Disk {
+	ret := make([]rmm.Disk, 0)
 	partitions, err := disk.Partitions(false)
 	if err != nil {
 		a.Logger.Debugln("GetDisks() partitions", err)
@@ -486,7 +474,7 @@ func (a *Agent) GetDisks() []trmm.Disk {
 			continue
 		}
 
-		d := trmm.Disk{
+		d := rmm.Disk{
 			Device:  p.Device,
 			Fstype:  p.Fstype,
 			Total:   ByteCountSI(usage.Total),
@@ -561,10 +549,10 @@ func ShowStatus(version string) {
 		}
 		var handle w32.HWND
 		msg := fmt.Sprintf("Agent: %s\n\nMesh Agent: %s", statusMap[winSvcName], statusMap[meshSvcName])
-		w32.MessageBox(handle, msg, fmt.Sprintf("Tactical RMM v%s", version), w32.MB_OK|w32.MB_ICONINFORMATION)
+		w32.MessageBox(handle, msg, fmt.Sprintf("Observer RMM v%s", version), w32.MB_OK|w32.MB_ICONINFORMATION)
 	} else {
-		fmt.Println("Tactical RMM Version", version)
-		fmt.Println("Tactical Agent:", statusMap[winSvcName])
+		fmt.Println("Observer RMM Version", version)
+		fmt.Println("Observer Agent:", statusMap[winSvcName])
 		fmt.Println("Mesh Agent:", statusMap[meshSvcName])
 	}
 }
@@ -721,7 +709,7 @@ func (a *Agent) SendSoftware() {
 }
 
 func (a *Agent) UninstallCleanup() {
-	registry.DeleteKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`)
+	registry.DeleteKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`)
 	a.PatchMgmnt(false)
 	a.CleanupAgentUpdates()
 	CleanupSchedTasks()
@@ -762,7 +750,7 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 		return errors.New(ret)
 	}
 
-	innoLogFile := filepath.Join(a.WinTmpDir, fmt.Sprintf("tacticalagent_update_v%s.txt", version))
+	innoLogFile := filepath.Join(a.WinTmpDir, fmt.Sprintf("observeragent_update_v%s.txt", version))
 
 	args := []string{"/C", updater, "/VERYSILENT", fmt.Sprintf("/LOG=%s", innoLogFile)}
 	cmd := exec.Command("cmd.exe", args...)
@@ -814,14 +802,14 @@ func (a *Agent) RunMigrations() {
 	// changed pybin dirs in v2.8.0
 	for _, i := range []string{"py38-x64", "py38-x32"} {
 		py := filepath.Join(a.ProgramDir, i)
-		if trmm.FileExists(py) {
+		if rmm.FileExists(py) {
 			os.RemoveAll(py)
 		}
 	}
 
 	for _, i := range []string{"nssm.exe", "nssm-x86.exe"} {
 		nssm := filepath.Join(a.ProgramDir, i)
-		if trmm.FileExists(nssm) {
+		if rmm.FileExists(nssm) {
 			os.Remove(nssm)
 		}
 	}
@@ -908,7 +896,7 @@ Out:
 }
 
 func (a *Agent) GetPython(force bool) {
-	if trmm.FileExists(a.PyBin) && !force {
+	if rmm.FileExists(a.PyBin) && !force {
 		return
 	}
 
@@ -920,7 +908,7 @@ func (a *Agent) GetPython(force bool) {
 	a.Logger.Debugf("GetPython() sleeping for %v seconds\n", sleepDelay)
 	time.Sleep(time.Duration(sleepDelay) * time.Second)
 
-	if !trmm.FileExists(a.PyBaseDir) {
+	if !rmm.FileExists(a.PyBaseDir) {
 		os.MkdirAll(a.PyBaseDir, 0775)
 	}
 
@@ -968,7 +956,7 @@ func (a *Agent) InstallNushell(force bool) {
 		return
 	}
 
-	if trmm.FileExists(a.NuBin) {
+	if rmm.FileExists(a.NuBin) {
 		if force {
 			a.Logger.Debugln(a.NuBin, "InstallNushell(): Forced install. Removing nu.exe binary.")
 			err := os.Remove(a.NuBin)
@@ -982,7 +970,7 @@ func (a *Agent) InstallNushell(force bool) {
 	}
 
 	programBinDir := filepath.Join(a.ProgramDir, "bin")
-	if !trmm.FileExists(programBinDir) {
+	if !rmm.FileExists(programBinDir) {
 		err := os.MkdirAll(programBinDir, 0755)
 		if err != nil {
 			a.Logger.Errorln("InstallNushell(): Error creating Program Files bin folder:", err)
@@ -995,7 +983,7 @@ func (a *Agent) InstallNushell(force bool) {
 		nushellPath := filepath.Join(a.ProgramDir, "etc", "nushell")
 		nushellConfig := filepath.Join(nushellPath, "config.nu")
 		nushellEnv := filepath.Join(nushellPath, "env.nu")
-		if !trmm.FileExists(nushellPath) {
+		if !rmm.FileExists(nushellPath) {
 			err := os.MkdirAll(nushellPath, 0755)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating Program Files/nushell:", err)
@@ -1003,7 +991,7 @@ func (a *Agent) InstallNushell(force bool) {
 			}
 		}
 
-		if !trmm.FileExists(nushellConfig) {
+		if !rmm.FileExists(nushellConfig) {
 			_, err := os.Create(nushellConfig)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating nushell config.nu:", err)
@@ -1015,7 +1003,7 @@ func (a *Agent) InstallNushell(force bool) {
 				return
 			}
 		}
-		if !trmm.FileExists(nushellEnv) {
+		if !rmm.FileExists(nushellEnv) {
 			_, err := os.Create(nushellEnv)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating nushell env.nu:", err)
@@ -1136,7 +1124,7 @@ func (a *Agent) InstallDeno(force bool) {
 		return
 	}
 
-	if trmm.FileExists(a.DenoBin) {
+	if rmm.FileExists(a.DenoBin) {
 		if force {
 			err := os.Remove(a.DenoBin)
 			if err != nil {
@@ -1149,7 +1137,7 @@ func (a *Agent) InstallDeno(force bool) {
 	}
 
 	programBinDir := filepath.Join(a.ProgramDir, "bin")
-	if !trmm.FileExists(programBinDir) {
+	if !rmm.FileExists(programBinDir) {
 		err := os.MkdirAll(programBinDir, 0755)
 		if err != nil {
 			a.Logger.Errorln("InstallDeno(): Error creating Program Files bin folder:", err)
@@ -1297,7 +1285,7 @@ func (a *Agent) InstallService() error {
 	}
 
 	// skip on first call of inno setup if this is a new install
-	_, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`, registry.ALL_ACCESS)
+	_, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`, registry.ALL_ACCESS)
 	if err != nil {
 		return nil
 	}
@@ -1312,7 +1300,7 @@ func (a *Agent) InstallService() error {
 
 func (a *Agent) GetAgentCheckInConfig(ret AgentCheckInConfig) AgentCheckInConfig {
 	// if local config present, overwrite
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`, registry.ALL_ACCESS)
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`, registry.ALL_ACCESS)
 	if err == nil {
 		if checkInHello, _, err := k.GetStringValue("CheckInHello"); err == nil {
 			ret.Hello = regRangeToInt(checkInHello)

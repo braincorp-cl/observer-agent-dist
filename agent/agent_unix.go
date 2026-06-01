@@ -1,17 +1,6 @@
 //go:build !windows
 // +build !windows
 
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -37,7 +26,6 @@ import (
 	psHost "github.com/shirou/gopsutil/v3/host"
 	nats "github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
-	trmm "github.com/wh1te909/trmm-shared"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -46,8 +34,8 @@ func ShowStatus(version string) {
 	fmt.Println(version)
 }
 
-func (a *Agent) GetDisks() []trmm.Disk {
-	ret := make([]trmm.Disk, 0)
+func (a *Agent) GetDisks() []rmm.Disk {
+	ret := make([]rmm.Disk, 0)
 	partitions, err := disk.Partitions(false)
 	if err != nil {
 		a.Logger.Debugln(err)
@@ -64,7 +52,7 @@ func (a *Agent) GetDisks() []trmm.Disk {
 			continue
 		}
 
-		d := trmm.Disk{
+		d := rmm.Disk{
 			Device:  p.Device,
 			Fstype:  p.Fstype,
 			Total:   ByteCountSI(usage.Total),
@@ -82,14 +70,14 @@ func (a *Agent) SystemRebootRequired() (bool, error) {
 	// deb
 	paths := [2]string{"/var/run/reboot-required", "/run/reboot-required"}
 	for _, p := range paths {
-		if trmm.FileExists(p) {
+		if rmm.FileExists(p) {
 			return true, nil
 		}
 	}
 	// rhel
 	bins := [2]string{"/usr/bin/needs-restarting", "/bin/needs-restarting"}
 	for _, bin := range bins {
-		if trmm.FileExists(bin) {
+		if rmm.FileExists(bin) {
 			opts := a.NewCMDOpts()
 			// https://man7.org/linux/man-pages/man1/needs-restarting.1.html
 			// -r Only report whether a full reboot is required (exit code 1) or not (exit code 0).
@@ -138,7 +126,7 @@ func (a *Agent) osString() string {
 }
 
 func NewAgentConfig() *rmm.AgentConfig {
-	viper.SetConfigName("tacticalagent")
+	viper.SetConfigName("observeragent")
 	viper.SetConfigType("json")
 	viper.AddConfigPath("/etc/")
 	viper.AddConfigPath(".")
@@ -216,7 +204,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 		opts.Args = nushellArgs
 		opts.Args = append(opts.Args, f.Name())
 		opts.Args = append(opts.Args, args...)
-		if !trmm.FileExists(a.NuBin) {
+		if !rmm.FileExists(a.NuBin) {
 			a.Logger.Errorln("RunScript(): Executable does not exist. Install Nu and try again:", a.NuBin)
 			err := errors.New("File Not Found: " + a.NuBin)
 			return "", err.Error(), 85, err
@@ -228,7 +216,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 			"run",
 			"--no-prompt",
 		}
-		if !trmm.FileExists(a.DenoBin) {
+		if !rmm.FileExists(a.DenoBin) {
 			a.Logger.Errorln("RunScript(): Executable does not exist. Install deno and try again:", a.DenoBin)
 			err := errors.New("File Not Found: " + a.DenoBin)
 			return "", err.Error(), 85, err
@@ -358,9 +346,9 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 	opts.Detached = true
 	switch runtime.GOOS {
 	case "linux":
-		opts.Command = "systemctl restart tacticalagent.service"
+		opts.Command = "systemctl restart observeragent.service"
 	case "darwin":
-		opts.Command = "launchctl kickstart -k system/tacticalagent"
+		opts.Command = "launchctl kickstart -k system/observeragent"
 	default:
 		return nil
 	}
@@ -395,7 +383,7 @@ func (a *Agent) NixMeshNodeID() string {
 	meshSuccess := false
 	a.Logger.Debugln("Getting mesh node id")
 
-	if !trmm.FileExists(a.MeshSystemEXE) {
+	if !rmm.FileExists(a.MeshSystemEXE) {
 		a.Logger.Debugln(a.MeshSystemEXE, "does not exist. Skipping.")
 		return ""
 	}
@@ -591,7 +579,7 @@ func (a *Agent) InstallNushell(force bool) {
 		return
 	}
 
-	if trmm.FileExists(a.NuBin) {
+	if rmm.FileExists(a.NuBin) {
 		if force {
 			a.Logger.Debugln(a.NuBin, "InstallNushell(): Forced install. Removing nu binary.")
 			err := os.Remove(a.NuBin)
@@ -604,7 +592,7 @@ func (a *Agent) InstallNushell(force bool) {
 		}
 	}
 
-	if !trmm.FileExists(nixAgentBinDir) {
+	if !rmm.FileExists(nixAgentBinDir) {
 		err := os.MkdirAll(nixAgentBinDir, 0755)
 		if err != nil {
 			a.Logger.Errorln("InstallNushell(): Error creating nixAgentBinDir:", err)
@@ -617,7 +605,7 @@ func (a *Agent) InstallNushell(force bool) {
 		nushellPath := filepath.Join(nixAgentEtcDir, "nushell")
 		nushellConfig := filepath.Join(nushellPath, "config.nu")
 		nushellEnv := filepath.Join(nushellPath, "env.nu")
-		if !trmm.FileExists(nushellPath) {
+		if !rmm.FileExists(nushellPath) {
 			err := os.MkdirAll(nushellPath, 0755)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating nixAgentEtcDir/nushell:", err)
@@ -625,7 +613,7 @@ func (a *Agent) InstallNushell(force bool) {
 			}
 		}
 
-		if !trmm.FileExists(nushellConfig) {
+		if !rmm.FileExists(nushellConfig) {
 			_, err := os.Create(nushellConfig)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating nushell config.nu:", err)
@@ -637,7 +625,7 @@ func (a *Agent) InstallNushell(force bool) {
 				return
 			}
 		}
-		if !trmm.FileExists(nushellEnv) {
+		if !rmm.FileExists(nushellEnv) {
 			_, err := os.Create(nushellEnv)
 			if err != nil {
 				a.Logger.Errorln("InstallNushell(): Error creating nushell env.nu:", err)
@@ -768,7 +756,7 @@ func (a *Agent) InstallDeno(force bool) {
 		return
 	}
 
-	if trmm.FileExists(a.DenoBin) {
+	if rmm.FileExists(a.DenoBin) {
 		if force {
 			a.Logger.Debugln(a.NuBin, "InstallDeno(): Forced install. Removing deno binary.")
 			err := os.Remove(a.DenoBin)
@@ -781,7 +769,7 @@ func (a *Agent) InstallDeno(force bool) {
 		}
 	}
 
-	if !trmm.FileExists(nixAgentBinDir) {
+	if !rmm.FileExists(nixAgentBinDir) {
 		err := os.MkdirAll(nixAgentBinDir, 0755)
 		if err != nil {
 			a.Logger.Errorln("InstallDeno(): Error creating nixAgentBinDir:", err)
@@ -929,7 +917,7 @@ func (a *Agent) GetEventLog(logName string, searchLastDays int) []rmm.EventLogMs
 	return []rmm.EventLogMsg{}
 }
 
-func (a *Agent) GetServiceDetail(name string) trmm.WindowsService { return trmm.WindowsService{} }
+func (a *Agent) GetServiceDetail(name string) rmm.WindowsService { return rmm.WindowsService{} }
 
 func (a *Agent) ControlService(name, action string) rmm.WinSvcResp {
 	return rmm.WinSvcResp{Success: false, ErrorMsg: "/na"}
@@ -939,7 +927,7 @@ func (a *Agent) EditService(name, startupType string) rmm.WinSvcResp {
 	return rmm.WinSvcResp{Success: false, ErrorMsg: "/na"}
 }
 
-func (a *Agent) GetInstalledSoftware() []trmm.WinSoftwareList { return []trmm.WinSoftwareList{} }
+func (a *Agent) GetInstalledSoftware() []rmm.WinSoftwareList { return []rmm.WinSoftwareList{} }
 
 func (a *Agent) ChecksRunning() bool { return false }
 
@@ -995,7 +983,7 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{"", ""}, nil
 }
 
-func (a *Agent) GetServices() []trmm.WindowsService { return []trmm.WindowsService{} }
+func (a *Agent) GetServices() []rmm.WindowsService { return []rmm.WindowsService{} }
 
 func (a *Agent) Start(_ service.Service) error { return nil }
 

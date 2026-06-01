@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -22,7 +11,7 @@ import (
 )
 
 func createAgentConfig(baseurl, agentid, apiurl, token, agentpk, cert, proxy, meshdir, natsport string, insecure bool, tmpdir string) {
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`, registry.ALL_ACCESS)
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`, registry.ALL_ACCESS)
 	if err != nil {
 		log.Fatalln("Error creating registry key:", err)
 	}
@@ -98,7 +87,7 @@ func createAgentConfig(baseurl, agentid, apiurl, token, agentpk, cert, proxy, me
 
 func (a *Agent) checkExistingAndRemove(silent bool) {
 	hasReg := false
-	_, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\TacticalRMM`, registry.ALL_ACCESS)
+	_, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`, registry.ALL_ACCESS)
 	if err == nil {
 		hasReg = true
 	}
@@ -110,7 +99,7 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 		if !silent && window != 0 {
 			var handle w32.HWND
 			msg := "Existing installation found\nClick OK to remove, then re-run the installer.\nClick Cancel to abort."
-			action := w32.MessageBox(handle, msg, "Tactical RMM", w32.MB_OKCANCEL|w32.MB_ICONWARNING)
+			action := w32.MessageBox(handle, msg, "Observer RMM", w32.MB_OKCANCEL|w32.MB_ICONWARNING)
 			if action == w32.IDOK {
 				a.AgentUninstall("foo")
 			}
@@ -140,7 +129,7 @@ func (a *Agent) installerMsg(msg, alert string, silent bool) {
 			flags = w32.MB_OK | w32.MB_ICONINFORMATION
 		}
 
-		w32.MessageBox(handle, msg, "Tactical RMM", flags)
+		w32.MessageBox(handle, msg, "Observer RMM", flags)
 	} else {
 		fmt.Println(msg)
 	}

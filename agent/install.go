@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -25,7 +14,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	trmm "github.com/wh1te909/trmm-shared"
+	trmm "github.com/braincorp/observeragent/shared"
 )
 
 type Installer struct {
@@ -278,7 +267,7 @@ func (a *Agent) Install(i *Installer) {
 		<string>%s</string>
 
 		<key>ServiceDescription</key>
-        <string>TacticalAgent Service</string>
+        <string>Observer RMM Agent Service</string>
 
 		<key>ProgramArguments</key>
 		<array>

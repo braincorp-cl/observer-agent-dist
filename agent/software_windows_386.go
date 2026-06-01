@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -16,7 +5,7 @@ import (
 
 	so "github.com/iamacarpet/go-win64api/shared"
 	wapf "github.com/wh1te909/go-win64api"
-	trmm "github.com/wh1te909/trmm-shared"
+	trmm "github.com/braincorp/observeragent/shared"
 )
 
 func installedSoftwareList() ([]so.Software, error) {

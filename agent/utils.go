@@ -1,14 +1,3 @@
-/*
-Copyright 2023 AmidaWare Inc.
-
-Licensed under the Tactical RMM License Version 1.0 (the “License”).
-You may only use the Licensed Software in accordance with the License.
-A copy of the License is available at:
-
-https://license.tacticalrmm.com
-
-*/
-
 package agent
 
 import (
@@ -20,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"math/rand"
+
+	crand "crypto/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -97,7 +89,7 @@ func (a *Agent) PublicIP() string {
 	if len(a.Proxy) > 0 {
 		client.SetProxy(a.Proxy)
 	}
-	urls := []string{"https://icanhazip.tacticalrmm.io/", "https://icanhazip.com", "https://ifconfig.co/ip"}
+	urls := []string{"https://icanhazip.com", "https://ifconfig.co/ip"}
 	ip := "error"
 
 	for _, url := range urls {
@@ -130,19 +122,23 @@ func (a *Agent) PublicIP() string {
 	return ip
 }
 
-// GenerateAgentID creates and returns a unique agent id
+// GenerateAgentID creates and returns a unique agent id using crypto/rand for cryptographic entropy
 func GenerateAgentID() string {
-	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	b := make([]rune, 40)
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := make([]byte, 40)
 	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+		n, err := crand.Int(crand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			panic("crypto/rand failed: " + err.Error())
+		}
+		b[i] = letters[n.Int64()]
 	}
 	return string(b)
 }
 
 // ShowVersionInfo prints basic debugging info
 func ShowVersionInfo(ver string) {
-	fmt.Println("Tactical RMM Agent:", ver)
+	fmt.Println("Observer RMM Agent:", ver)
 	fmt.Println("Arch:", runtime.GOARCH)
 	if runtime.GOOS == "windows" {
 		fmt.Println("Program Directory:", filepath.Join(os.Getenv("ProgramFiles"), progFilesName))
