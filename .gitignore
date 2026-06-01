@@ -12,3 +12,7 @@ build/Output
 tacticalagent-v*
 observeragent
 observeragent-v*
+
+# Reversa
+.reversa/config.user.toml
+_reversa_sdd/
