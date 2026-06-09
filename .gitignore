@@ -14,5 +14,9 @@ observeragent
 observeragent-v*
 
 # Reversa
-.reversa/config.user.toml
+.reversa/
+.agents/
+.claude/
+CLAUDE.md
 _reversa_sdd/
+_reversa_forward/
