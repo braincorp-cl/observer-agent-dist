@@ -9,7 +9,6 @@
 *.ico
 *.bmp
 build/Output
-tacticalagent-v*
 observeragent
 observeragent-v*
 

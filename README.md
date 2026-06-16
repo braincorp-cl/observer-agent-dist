@@ -1,5 +1,5 @@
-### Tactical RMM Agent
-https://github.com/amidaware/tacticalrmm
+### Observer RMM Agent
+https://github.com/braincorp-cl/observer-agent
 
 #### building the agent
 ```

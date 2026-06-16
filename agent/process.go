@@ -54,13 +54,7 @@ func (a *Agent) KillHungUpdates() {
 			continue
 		}
 
-		// winagent-v* is deprecated
-		if strings.Contains(p.Exe, "winagent-v") {
-			a.Logger.Debugln("killing process", p.Exe)
-			KillProc(int32(p.PID))
-		}
-
-		if strings.Contains(p.Exe, "tacticalagent-v") || strings.Contains(p.Exe, "observeragent-v") {
+		if strings.Contains(p.Exe, "observeragent-v") {
 			a.Logger.Debugln("killing process", p.Exe)
 			KillProc(int32(p.PID))
 		}

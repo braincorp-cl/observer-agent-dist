@@ -57,7 +57,7 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 		}
 
 		if trmm.FileExists(macPlistPath) {
-			a.Logger.Infoln("Existing tacticalagent plist found, attempting to remove...")
+			a.Logger.Infoln("Existing observeragent plist found, attempting to remove...")
 			opts := a.NewCMDOpts()
 			opts.Command = fmt.Sprintf("launchctl bootout system %s", macPlistPath)
 			a.CmdV2(opts)

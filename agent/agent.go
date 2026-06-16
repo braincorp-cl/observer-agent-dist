@@ -617,8 +617,8 @@ func (a *Agent) CleanupAgentUpdates() {
 			continue
 		}
 
-		// winagent-v* kept for backward compat: cleans up legacy TacticalRMM files during migration
-		globs := []string{"observeragent-v*", "is-*.tmp", "winagent-v*"}
+		// remove leftover Observer agent update artifacts
+		globs := []string{"observeragent-v*", "is-*.tmp"}
 		for _, glob := range globs {
 			files, err := filepath.Glob(glob)
 			if err == nil {

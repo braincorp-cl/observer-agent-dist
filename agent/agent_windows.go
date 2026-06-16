@@ -864,7 +864,7 @@ func (a *Agent) installMesh(meshbin, exe, proxy string) (string, error) {
 }
 
 // ChecksRunning prevents duplicate checks from running
-// Have to do it this way, can't use atomic because they can run from both rpc and tacticalagent services
+// Have to do it this way, can't use atomic because they can run from both rpc and observeragent services
 func (a *Agent) ChecksRunning() bool {
 	running := false
 	procs, err := ps.Processes()
@@ -945,7 +945,7 @@ func (a *Agent) GetPython(force bool) {
 }
 
 // InstallNushell will download nushell from GitHub and install (copy) it to ProgramDir\bin, where ProgramDir is
-// initialized to C:\Program Files\TacticalAgent
+// initialized to C:\Program Files\ObserverAgent
 func (a *Agent) InstallNushell(force bool) {
 	sleepDelay := randRange(1, 10)
 	a.Logger.Debugf("InstallNushell() sleeping for %v seconds", sleepDelay)
@@ -1113,7 +1113,7 @@ func (a *Agent) InstallNushell(force bool) {
 }
 
 // InstallDeno will download deno from GitHub and install (copy) it to ProgramDir\bin, where ProgramDir is
-// initialized to C:\Program Files\TacticalAgent
+// initialized to C:\Program Files\ObserverAgent
 func (a *Agent) InstallDeno(force bool) {
 	sleepDelay := randRange(1, 10)
 	a.Logger.Debugf("InstallDeno() sleeping for %v seconds", sleepDelay)
