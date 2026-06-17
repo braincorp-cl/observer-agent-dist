@@ -926,7 +926,8 @@ func (a *Agent) GetPython(force bool) {
 		rClient.SetProxy(a.Proxy)
 	}
 
-	url := fmt.Sprintf("https://github.com/amidaware/rmmagent/releases/download/v2.8.0/%s", archZip)
+	// Embedded Python bundle (psutil included) hosted by BrainCorp; mirror of upstream amidaware/rmmagent v2.8.0
+	url := fmt.Sprintf("https://www.observer.cl/agents/%s", archZip)
 	a.Logger.Debugln(url)
 	r, err := rClient.R().SetOutput(pyZip).Get(url)
 	if err != nil {
