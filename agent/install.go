@@ -297,6 +297,20 @@ func (a *Agent) Install(i *Installer) {
 	if runtime.GOOS == "windows" {
 		os.MkdirAll(filepath.Join(a.ProgramDir, "bin"), 0755)
 
+		// When installed from the raw release binary (PowerShell/manual method)
+		// the agent is not yet present at the service path, so the auto-start
+		// service would point at a missing file. Copy ourselves there before
+		// installing the service. Mirrors the macOS branch above; no-op when we
+		// are already running from the install location (Inno Setup flow).
+		if self, exeErr := os.Executable(); exeErr == nil {
+			dst := filepath.Join(a.ProgramDir, winExeName)
+			if !strings.EqualFold(self, dst) {
+				if cerr := copyFile(self, dst); cerr != nil {
+					a.Logger.Errorln("Install() copy agent to ProgramDir:", cerr)
+				}
+			}
+		}
+
 		// send software api
 		a.SendSoftware()
 
