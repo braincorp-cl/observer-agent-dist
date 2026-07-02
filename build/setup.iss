@@ -1,10 +1,17 @@
 #define MyAppName "Observer RMM Agent"
-#define MyAppVersion "2.10.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "2.10.0"
+#endif
 #define MyAppPublisher "BRAINCORP OP SPA"
 #define MyAppURL "https://github.com/braincorp"
 #define MyAppExeName "observeragent.exe"
 #define MESHEXE "meshagent.exe"
 #define MESHDIR "{sd}\Program Files\Mesh Agent"
+; Directorio que contiene observeragent.exe a empaquetar. Override en CI:
+;   iscc build\setup.iss /DAgentSrc=<dir> /DMyAppVersion=<ver>
+#ifndef AgentSrc
+  #define AgentSrc "C:\Users\Public\Documents\agent"
+#endif
 
 [Setup]
 AppId={{0D34D278-5FAF-4159-A4A0-4E2D2C08139D}
@@ -26,7 +33,7 @@ WizardStyle=modern
 RestartApplications=no
 CloseApplications=no
 MinVersion=6.1
-VersionInfoVersion=2.10.0.0
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoOriginalFileName=observeragent.exe
 AppCopyright="Copyright (C) 2025 {#MyAppPublisher}"
 
@@ -34,7 +41,7 @@ AppCopyright="Copyright (C) 2025 {#MyAppPublisher}"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "C:\Users\Public\Documents\agent\observeragent.exe"; DestDir: "{app}"; Flags: ignoreversion;
+Source: "{#AgentSrc}\observeragent.exe"; DestDir: "{app}"; Flags: ignoreversion;
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
