@@ -2,6 +2,12 @@
 #ifndef MyAppVersion
   #define MyAppVersion "2.10.0"
 #endif
+; VersionInfoVersion exige numérico puro (x.x.x); quitar sufijo prerelease (ej. -rc1).
+#if Pos("-", MyAppVersion) > 0
+  #define MyAppVersionNumeric Copy(MyAppVersion, 1, Pos("-", MyAppVersion) - 1)
+#else
+  #define MyAppVersionNumeric MyAppVersion
+#endif
 #define MyAppPublisher "BRAINCORP OP SPA"
 #define MyAppURL "https://github.com/braincorp"
 #define MyAppExeName "observeragent.exe"
@@ -33,7 +39,7 @@ WizardStyle=modern
 RestartApplications=no
 CloseApplications=no
 MinVersion=6.1
-VersionInfoVersion={#MyAppVersion}.0
+VersionInfoVersion={#MyAppVersionNumeric}.0
 VersionInfoOriginalFileName=observeragent.exe
 AppCopyright="Copyright (C) 2025 {#MyAppPublisher}"
 
