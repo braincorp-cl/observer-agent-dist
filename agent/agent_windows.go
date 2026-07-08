@@ -625,7 +625,11 @@ func EnableRDP() {
 	}
 
 	args := make([]string, 0)
-	cmd := `netsh advfirewall firewall set rule group="remote desktop" new enable=Yes`
+	// Grupo de firewall en referencia NEUTRA de idioma (@FirewallAPI.dll,-28752 =
+	// "Remote Desktop"). El literal en inglés "remote desktop" no matchea en Windows
+	// localizado (p.ej. español) → netsh devuelve exit status 1 (cosmético: RDP ya
+	// quedó habilitado por el registro fDenyTSConnections=0 arriba).
+	cmd := `netsh advfirewall firewall set rule group="@FirewallAPI.dll,-28752" new enable=Yes`
 	_, cerr := CMDShell("cmd", args, cmd, 10, false, false, false, nil, nil, nil)
 	if cerr != nil {
 		fmt.Println(cerr)

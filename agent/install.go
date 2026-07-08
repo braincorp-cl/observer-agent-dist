@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-resty/resty/v2"
 	trmm "github.com/braincorp/observeragent/shared"
+	"github.com/go-resty/resty/v2"
 )
 
 type Installer struct {
@@ -42,9 +42,24 @@ type Installer struct {
 	TmpDir           string
 }
 
-func (a *Agent) Install(i *Installer) {
-	a.checkExistingAndRemove(i.Silent)
+// logTLSChain registra la cadena de certificados TLS que presenta el server
+// (subject / issuer / vigencia) para diagnosticar fallos de handshake, como el
+// incidente de macOS (2026-07-06) donde la interceptación TLS del EDR rompía la
+// cadena. Solo escribe logs; no altera la verificación.
+func (a *Agent) logTLSChain(cs *tls.ConnectionState, ctx string) {
+	if cs == nil {
+		return
+	}
+	a.Logger.Infoln(fmt.Sprintf("%s: %d cert(s) en la cadena, verifiedChains=%d",
+		ctx, len(cs.PeerCertificates), len(cs.VerifiedChains)))
+	for idx, cert := range cs.PeerCertificates {
+		a.Logger.Infoln(fmt.Sprintf("  [%d] subject=%q issuer=%q notAfter=%s",
+			idx, cert.Subject.String(), cert.Issuer.String(),
+			cert.NotAfter.Format(time.RFC3339)))
+	}
+}
 
+func (a *Agent) Install(i *Installer) {
 	i.Headers = map[string]string{
 		"content-type":  "application/json",
 		"Authorization": fmt.Sprintf("Token %s", i.Token),
@@ -92,6 +107,13 @@ func (a *Agent) Install(i *Installer) {
 
 	insecureConf := &tls.Config{
 		InsecureSkipVerify: true,
+		// Aun en modo -insecure, logueamos la cadena que presenta el server para
+		// diagnóstico. Devolver nil NO debilita nada: en -insecure la verificación
+		// ya se omite; este callback solo observa.
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			a.logTLSChain(&cs, "handshake TLS (installer)")
+			return nil
+		},
 	}
 
 	if i.Insecure {
@@ -105,6 +127,10 @@ func (a *Agent) Install(i *Installer) {
 	if creds.StatusCode() == 401 {
 		a.installerMsg("Installer token has expired. Please generate a new one.", "error", i.Silent)
 	}
+	// Registra la cadena presentada en la conexión exitosa (todos los modos).
+	if creds.RawResponse != nil && creds.RawResponse.TLS != nil {
+		a.logTLSChain(creds.RawResponse.TLS, "respuesta TLS (installer)")
+	}
 
 	verPayload := map[string]string{"version": a.Version}
 	iVersion, ierr := iClient.R().SetBody(verPayload).Post(fmt.Sprintf("%s/api/v3/installer/", baseURL))
@@ -114,6 +140,14 @@ func (a *Agent) Install(i *Installer) {
 	if iVersion.StatusCode() != 200 {
 		a.installerMsg(DjangoStringResp(iVersion.String()), "error", i.Silent)
 	}
+
+	// checkExistingAndRemove borra la instalación existente (en macOS hace
+	// -fulluninstall del mesh + borra dirs; en Windows aborta pidiendo desinstalar).
+	// Se ejecuta AQUÍ, sólo DESPUÉS de confirmar que el server responde y que el
+	// endpoint /installer/ devolvió 200, para no dejar la máquina sin agente si el
+	// server es inalcanzable (p.ej. TLS roto, incidente macOS 2026-07-06). Antes
+	// corría al inicio de Install(), antes de cualquier chequeo del server.
+	a.checkExistingAndRemove(i.Silent)
 
 	rClient := resty.New()
 	rClient.SetCloseConnection(true)
