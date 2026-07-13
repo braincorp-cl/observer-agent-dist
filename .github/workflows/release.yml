@@ -126,3 +126,28 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      # Publica los binarios en el CDN propio agents.observer.cl (appserver, WebDAV
+      # autenticado sobre HTTPS). Es el mecanismo de copia definitivo: se dispara en
+      # cada release, sin control-plane intermedio ni credenciales de GitHub en el server.
+      # Requiere los secrets CDN_UPLOAD_USER / CDN_UPLOAD_PASSWORD del repo y que
+      # agents.observer.cl este publicado por el NPM. No bloquea el release si falla.
+      - name: Publish binaries to agents.observer.cl CDN
+        continue-on-error: true
+        env:
+          CDN_USER: ${{ secrets.CDN_UPLOAD_USER }}
+          CDN_PASS: ${{ secrets.CDN_UPLOAD_PASSWORD }}
+        run: |
+          if [ -z "$CDN_USER" ] || [ -z "$CDN_PASS" ]; then
+            echo "::warning::Secrets CDN_UPLOAD_USER/PASSWORD ausentes; se omite el push al CDN."
+            exit 0
+          fi
+          base="https://agents.observer.cl/releases/download/${GITHUB_REF_NAME}"
+          echo "Creando coleccion $base/ ..."
+          curl -fsS -u "$CDN_USER:$CDN_PASS" -X MKCOL "$base/" || true
+          for f in binaries/observeragent-*; do
+            [ -e "$f" ] || continue
+            echo "Subiendo $(basename "$f") ..."
+            curl -fsS -u "$CDN_USER:$CDN_PASS" -T "$f" "$base/$(basename "$f")"
+          done
+          echo "Publicacion al CDN completada para ${GITHUB_REF_NAME}."
