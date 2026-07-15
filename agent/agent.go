@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -734,7 +735,16 @@ func createWinTempDir() error {
 	return nil
 }
 
-func (a *Agent) RunTask(id int) error {
+func (a *Agent) RunTask(id int, jitter bool) error {
+	// jitter reparte en el tiempo el arranque de una tarea programada cuando
+	// una flota grande la dispara a la vez (backport v2.11.0). Solo aplica en
+	// la ruta de tarea programada; las ejecuciones manuales vía NATS pasan false.
+	if jitter {
+		delay := time.Duration(rand.Int63n(int64(15 * time.Second)))
+		a.Logger.Debugf("Applying startup jitter before task id %d: sleeping for %s", id, delay)
+		time.Sleep(delay)
+	}
+
 	data := rmm.AutomatedTask{}
 	url := fmt.Sprintf("/api/v3/%d/%s/taskrunner/", id, a.AgentID)
 	r1, gerr := a.rClient.R().Get(url)

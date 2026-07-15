@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -47,6 +48,14 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		if err != nil {
 			a.Logger.Errorln("AgentSvc() createWinTempDir():", err)
 		}
+	}
+
+	// Sync temprano del mesh node id justo tras instalar, para que el server
+	// conozca la conectividad Mesh sin esperar al primer tick (backport v2.11.0
+	// "get meshid after install"). Solo unix; en Windows el install de Mesh es
+	// síncrono. Sin el campo run_sync_task: nuestro backend lo ignora.
+	if runtime.GOOS != "windows" {
+		go a.SyncMeshNodeID()
 	}
 
 	sleepDelay := randRange(7, 25)
@@ -101,6 +110,10 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	checkInWMITicker := time.NewTicker(time.Duration(conf.WMI) * time.Second)
 	syncMeshTicker := time.NewTicker(time.Duration(conf.SyncMesh) * time.Second)
 
+	// Guard atómico: si un SyncMeshNodeID del tick anterior sigue corriendo,
+	// saltamos este tick en vez de solaparlos (backport v2.11.0 "fix ... race").
+	var syncMeshRunning atomic.Bool
+
 	for {
 		select {
 		case <-checkInHelloTicker.C:
@@ -118,7 +131,14 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		case <-checkInWMITicker.C:
 			a.NatsMessage(nc, "agent-wmi")
 		case <-syncMeshTicker.C:
-			a.SyncMeshNodeID()
+			if syncMeshRunning.CompareAndSwap(false, true) {
+				go func() {
+					defer syncMeshRunning.Store(false)
+					a.SyncMeshNodeID()
+				}()
+			} else {
+				a.Logger.Debugln("syncMeshTicker SyncMeshNodeID already running, skipping tick")
+			}
 		}
 	}
 }

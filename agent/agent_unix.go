@@ -380,7 +380,6 @@ func (a *Agent) AgentUninstall(code string) {
 
 func (a *Agent) NixMeshNodeID() string {
 	var meshNodeID string
-	meshSuccess := false
 	a.Logger.Debugln("Getting mesh node id")
 
 	if !rmm.FileExists(a.MeshSystemEXE) {
@@ -393,21 +392,29 @@ func (a *Agent) NixMeshNodeID() string {
 	opts.Shell = a.MeshSystemEXE
 	opts.Command = "-nodeid"
 
-	for !meshSuccess {
+	// Tope de intentos para evitar un bucle infinito si Mesh nunca queda listo
+	// (backport v2.11.0 "fix infinite loop race"). Antes: for !meshSuccess sin salida.
+	const maxAttempts = 10
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		out := a.CmdV2(opts)
 		meshNodeID = out.Stdout
-		a.Logger.Debugln("Stdout:", out.Stdout)
-		a.Logger.Debugln("Stderr:", out.Stderr)
-		if meshNodeID == "" {
-			time.Sleep(1 * time.Second)
-			continue
-		} else if strings.Contains(strings.ToLower(meshNodeID), "graphical version") || strings.Contains(strings.ToLower(meshNodeID), "zenity") {
-			time.Sleep(1 * time.Second)
-			continue
+		a.Logger.Debugln("NixMeshNodeID() Stdout:", out.Stdout)
+		a.Logger.Debugln("NixMeshNodeID() Stderr:", out.Stderr)
+
+		notReady := meshNodeID == "" || strings.Contains(strings.ToLower(meshNodeID), "graphical version") || strings.Contains(strings.ToLower(meshNodeID), "zenity")
+
+		if !notReady {
+			return meshNodeID
 		}
-		meshSuccess = true
+
+		a.Logger.Debugf("Meshnodeid not ready, attempt %d/%d", attempt, maxAttempts)
+		if attempt < maxAttempts {
+			time.Sleep(1 * time.Second)
+		}
 	}
-	return meshNodeID
+	a.Logger.Debugln("Failed to get meshnodeid after max attempts")
+	return "error getting meshnodeid"
 }
 
 func (a *Agent) getMeshNodeID() (string, error) {

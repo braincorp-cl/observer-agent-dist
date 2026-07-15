@@ -722,7 +722,7 @@ func (a *Agent) RunRPC() {
 		case "runtask":
 			go func(p *NatsMsg) {
 				a.Logger.Debugln("Running task")
-				a.RunTask(p.TaskPK)
+				a.RunTask(p.TaskPK, false)
 			}(payload)
 
 		case "publicip":
