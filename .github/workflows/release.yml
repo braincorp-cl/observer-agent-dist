@@ -143,11 +143,16 @@ jobs:
             exit 0
           fi
           base="https://agents.observer.cl/releases/download/${GITHUB_REF_NAME}"
+          # --http1.1 es OBLIGATORIO: el runner de GitHub (Azure) sube con alto RTT hacia
+          # Chile y sobre HTTP/2 el stream se resetea a media subida (curl 92 PROTOCOL_ERROR)
+          # en binarios grandes (~10 MiB darwin). HTTP/1.1 es robusto para PUT grandes.
+          # --retry-all-errors reintenta ante cortes transitorios de red del perimetro.
+          CDN_CURL=(curl -fsS --http1.1 --retry 3 --retry-all-errors --retry-delay 5 -u "$CDN_USER:$CDN_PASS")
           echo "Creando coleccion $base/ ..."
-          curl -fsS -u "$CDN_USER:$CDN_PASS" -X MKCOL "$base/" || true
+          "${CDN_CURL[@]}" -X MKCOL "$base/" || true
           for f in binaries/observeragent-*; do
             [ -e "$f" ] || continue
             echo "Subiendo $(basename "$f") ..."
-            curl -fsS -u "$CDN_USER:$CDN_PASS" -T "$f" "$base/$(basename "$f")"
+            "${CDN_CURL[@]}" -T "$f" "$base/$(basename "$f")"
           done
           echo "Publicacion al CDN completada para ${GITHUB_REF_NAME}."
