@@ -530,6 +530,42 @@ func (a *Agent) SyncMeshNodeID() {
 	}
 }
 
+// ReinstallMesh descarga el instalador Mesh cacheado que sirve el servidor
+// (endpoint /meshreinstall/, backport v1.5.1 C1+B1) y reinstala el servicio
+// Mesh durante la auto-reparación: desinstala, limpia el directorio y vuelve
+// a instalar. Windows-only por ahora (el servidor solo cachea el instalador
+// Windows); en el resto de plataformas retorna sin efecto.
+func (a *Agent) ReinstallMesh() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	meshOutput := filepath.Join(a.ProgramDir, a.MeshInstaller)
+	url := fmt.Sprintf("/api/v3/%s/meshreinstall/", a.AgentID)
+	r, err := a.rClient.R().SetOutput(meshOutput).Get(url)
+	if err != nil {
+		a.Logger.Errorln("ReinstallMesh() download:", err)
+		return
+	}
+	if r.IsError() {
+		a.Logger.Errorln("ReinstallMesh() status code:", r.StatusCode())
+		return
+	}
+	_, err = CMD(meshOutput, []string{"-fulluninstall"}, 30, false)
+	if err != nil {
+		a.Logger.Errorln("ReinstallMesh() uninstall:", err)
+	}
+	time.Sleep(2 * time.Second)
+	err = os.RemoveAll(filepath.Dir(a.MeshSystemEXE))
+	if err != nil {
+		a.Logger.Errorln("ReinstallMesh() RemoveAll:", err)
+	}
+	time.Sleep(1 * time.Second)
+	_, err = a.installMesh(meshOutput, a.MeshSystemEXE, a.Proxy)
+	if err != nil {
+		a.Logger.Errorln("ReinstallMesh() installMesh:", err)
+	}
+}
+
 func (a *Agent) setupNatsOptions() []nats.Option {
 	reconnectWait := randRange(2, 8)
 	opts := make([]nats.Option, 0)
