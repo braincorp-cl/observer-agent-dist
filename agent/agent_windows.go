@@ -215,7 +215,10 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 		token, err = wintoken.GetInteractiveToken(wintoken.TokenImpersonation)
 		if err == nil {
 			defer token.Close()
-			cmd.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(token.Token()), HideWindow: true}
+			// CREATE_NO_WINDOW en vez de HideWindow: evita el flash de ventana de
+			// consola al correr scripts como el usuario logueado (mismo patrón que
+			// CMDShell). Fuera del delta upstream v2.11.0; mejora de consistencia.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(token.Token()), CreationFlags: windows.CREATE_NO_WINDOW}
 
 			if usingEnvVars {
 				envBlock, err = CreateEnvironmentBlock(syscall.Token(token.Token()))
