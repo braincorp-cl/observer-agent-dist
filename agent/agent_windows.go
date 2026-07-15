@@ -900,11 +900,16 @@ Out:
 }
 
 func (a *Agent) GetPython(force bool) {
-	if rmm.FileExists(a.PyBin) && !force {
+	exists := rmm.FileExists(a.PyBin)
+
+	if exists && !force {
 		return
 	}
 
-	if force {
+	// Limpia el directorio también cuando el binario no existe (no solo en
+	// force), para no mezclar restos al subir la versión de Python empaquetada
+	// (backport v2.11.0 "also install if we update py version").
+	if !exists || force {
 		os.RemoveAll(a.PyBaseDir)
 	}
 
