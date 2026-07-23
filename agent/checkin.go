@@ -57,6 +57,25 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			Agentid:  a.AgentID,
 			PublicIP: a.PublicIP(),
 		}
+	case "agent-geolocation":
+		// Feature 023. Solo se publica cuando hay un fix con coordenadas
+		// (native/wifi/ip). Estados denied/unavailable NO generan punto
+		// (privacidad + CONTRACT-01: nada de filas con coordenadas nulas).
+		loc := a.GetLocation()
+		if !loc.HasFix() {
+			a.Logger.Debugln("geo: sin fix, no se publica")
+			return
+		}
+		payload = trmm.GeoNats{
+			Func:       "geo",
+			Agentid:    a.AgentID,
+			Version:    a.Version,
+			Lat:        loc.Lat,
+			Long:       loc.Long,
+			AccuracyM:  loc.AccuracyM,
+			Source:     loc.Source,
+			CapturedAt: loc.CapturedAt.Unix(),
+		}
 	}
 
 	a.Logger.Debugln(mode, payload)

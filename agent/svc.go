@@ -36,6 +36,9 @@ type AgentCheckInConfig struct {
 	InstallDenoVersion     string `json:"install_deno_version"`
 	InstallDenoUrl         string `json:"install_deno_url"`
 	DenoDefaultPermissions string `json:"deno_default_permissions"`
+	// Feature 023: interruptor global de geolocalización + intervalo de captura.
+	GeoEnabled bool `json:"geo_enabled"`
+	Geo        int  `json:"checkin_geo"`
 }
 
 func (a *Agent) AgentSvc(nc *nats.Conn) {
@@ -110,6 +113,20 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	checkInWMITicker := time.NewTicker(time.Duration(conf.WMI) * time.Second)
 	syncMeshTicker := time.NewTicker(time.Duration(conf.SyncMesh) * time.Second)
 
+	// Feature 023: ticker de geolocalización (baja frecuencia). El intervalo tiene
+	// un piso de seguridad (nunca alta frecuencia). Si el interruptor global está
+	// apagado, el ticker se detiene: su canal nunca dispara, así el select de abajo
+	// queda inerte sin ramas condicionales. (TODO: disparo adicional al detectar
+	// cambio de red — diferido; el ticker cubre la captura periódica garantizada.)
+	geoInterval := conf.Geo
+	if geoInterval < 300 {
+		geoInterval = 300
+	}
+	checkInGeoTicker := time.NewTicker(time.Duration(geoInterval) * time.Second)
+	if !conf.GeoEnabled {
+		checkInGeoTicker.Stop()
+	}
+
 	// Guard atómico: si un SyncMeshNodeID del tick anterior sigue corriendo,
 	// saltamos este tick en vez de solaparlos (backport v2.11.0 "fix ... race").
 	var syncMeshRunning atomic.Bool
@@ -130,6 +147,8 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			a.SendSoftware()
 		case <-checkInWMITicker.C:
 			a.NatsMessage(nc, "agent-wmi")
+		case <-checkInGeoTicker.C:
+			a.NatsMessage(nc, "agent-geolocation")
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
 				go func() {
@@ -175,6 +194,8 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		ret.InstallDenoVersion = ""
 		ret.InstallDenoUrl = ""
 		ret.DenoDefaultPermissions = ""
+		ret.GeoEnabled = false
+		ret.Geo = randRange(1500, 2100)
 	} else {
 		ret.Hello = r.Result().(*AgentCheckInConfig).Hello
 		ret.AgentInfo = r.Result().(*AgentCheckInConfig).AgentInfo
@@ -193,6 +214,8 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		ret.InstallDenoVersion = r.Result().(*AgentCheckInConfig).InstallDenoVersion
 		ret.InstallDenoUrl = r.Result().(*AgentCheckInConfig).InstallDenoUrl
 		ret.DenoDefaultPermissions = r.Result().(*AgentCheckInConfig).DenoDefaultPermissions
+		ret.GeoEnabled = r.Result().(*AgentCheckInConfig).GeoEnabled
+		ret.Geo = r.Result().(*AgentCheckInConfig).Geo
 	}
 	return ret
 }

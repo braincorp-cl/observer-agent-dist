@@ -1003,6 +1003,22 @@ type PublicIPNats struct {
 	PublicIP string `json:"public_ip"`
 }
 
+// GeoNats is sent by the agent on NATS subject "agent-geolocation".
+// GAP-051: usa tags `json:` (NO `msgpack:`). ugorji/go/codec con MsgpackHandle
+// honra `codec`/`json` e ignora `msgpack:`; las claves de wire deben ser
+// idénticas a las del espejo en natsapi/shared/types.go o el decode produce un
+// struct vacío (Agentid="") y el INSERT no matchea al agente. Ver CONTRACT-01.
+type GeoNats struct {
+	Func       string  `json:"func"`        // discriminador de check-in ("geo")
+	Agentid    string  `json:"agent_id"`    // clave de match en BD
+	Version    string  `json:"version"`     // versión del agente
+	Lat        float64 `json:"lat"`         // latitud WGS84
+	Long       float64 `json:"long"`        // longitud WGS84
+	AccuracyM  int     `json:"accuracy_m"`  // precisión estimada en metros
+	Source     string  `json:"source"`      // native | wifi | ip | denied | unavailable
+	CapturedAt int64   `json:"captured_at"` // unix epoch (segundos, UTC)
+}
+
 type WinSoftwareList struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`
