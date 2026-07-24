@@ -95,10 +95,12 @@ func (a *Agent) GetLocation() Location {
 }
 
 // ipGeolocation resuelve una ubicación aproximada (nivel ciudad) a partir de la
-// IP pública. Endpoint configurable vía OBSERVER_GEO_IP_URL (default: ipapi.co,
-// gratuito, HTTPS, sin API key). No loggea coordenadas a nivel normal.
+// IP pública. Endpoint configurable vía OBSERVER_GEO_IP_URL (default: ipwho.is,
+// gratuito, HTTPS, sin API key; devuelve latitude/longitude). Se prefiere ipwho.is
+// sobre ipapi.co porque este último geolocalizaba mal ciertos rangos chilenos
+// (p.ej. ENTEL a Arica en vez de Santiago). No loggea coordenadas a nivel normal.
 func (a *Agent) ipGeolocation() (Location, error) {
-	url := geoEnv("OBSERVER_GEO_IP_URL", "https://ipapi.co/json/")
+	url := geoEnv("OBSERVER_GEO_IP_URL", "https://ipwho.is/")
 	client := resty.New()
 	client.SetHeader("User-Agent", a.AgentHeader)
 	client.SetTimeout(8 * time.Second)
