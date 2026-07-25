@@ -7,7 +7,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -123,10 +126,98 @@ func locationConsentDenied() bool {
 	return strings.EqualFold(strings.TrimSpace(v), "Deny")
 }
 
-// scanWifiBSSIDs lista las antenas visibles con netsh, acumulando por cada BSSID su
-// señal (%→dBm aprox.) y su canal. Lista vacía si netsh falla o no hay WiFi (→
-// degradación a IP). No expone las MAC en logs de nivel normal.
+// wlanapi expone WlanScan para forzar un barrido activo de antenas antes de leer la
+// caché con netsh. Estando ASOCIADO a una red, Windows suele reportar solo el AP
+// conectado y hace el barrido completo (vecinas incluidas) solo periódicamente; sin
+// forzarlo, el escaneo del ticker ve <2 antenas casi siempre y la geo degrada a IP
+// aunque haya cobertura WiFi. Con el barrido forzado el fix WiFi es consistente.
+var (
+	wlanapi                = windows.NewLazySystemDLL("wlanapi.dll")
+	procWlanOpenHandle     = wlanapi.NewProc("WlanOpenHandle")
+	procWlanEnumInterfaces = wlanapi.NewProc("WlanEnumInterfaces")
+	procWlanScan           = wlanapi.NewProc("WlanScan")
+	procWlanFreeMemory     = wlanapi.NewProc("WlanFreeMemory")
+	procWlanCloseHandle    = wlanapi.NewProc("WlanCloseHandle")
+)
+
+// El barrido de WlanScan es asíncrono; Windows tarda ~4 s en completarlo y refrescar
+// la caché que lee netsh. No hay señal síncrona simple desde un servicio, así que se
+// espera un margen fijo antes de leer.
+const wlanScanSettleTime = 4 * time.Second
+
+// https://learn.microsoft.com/windows/win32/api/wlanapi/ns-wlanapi-wlan_interface_info
+type wlanInterfaceInfo struct {
+	InterfaceGUID  windows.GUID
+	InterfaceDescr [256]uint16
+	State          uint32
+}
+
+// https://learn.microsoft.com/windows/win32/api/wlanapi/ns-wlanapi-wlan_interface_info_list
+type wlanInterfaceInfoList struct {
+	NumberOfItems uint32
+	Index         uint32
+	InterfaceInfo [1]wlanInterfaceInfo
+}
+
+// forceWifiScan dispara un barrido activo (WlanScan) en cada interfaz WLAN y espera a
+// que Windows actualice la caché. Best-effort: si wlanapi no está disponible (p.ej.
+// Server Core sin WLAN AutoConfig) o cualquier paso falla, se loguea y se sigue —
+// scanWifiBSSIDs leerá lo que haya en caché. No desasocia la red (el barrido en
+// segundo plano no corta la conexión).
+func forceWifiScan(a *Agent) {
+	if err := wlanapi.Load(); err != nil {
+		a.Logger.Debugln("forceWifiScan: wlanapi.dll no disponible:", err)
+		return
+	}
+	for _, p := range []*windows.LazyProc{
+		procWlanOpenHandle, procWlanEnumInterfaces, procWlanScan,
+		procWlanFreeMemory, procWlanCloseHandle,
+	} {
+		if err := p.Find(); err != nil {
+			a.Logger.Debugln("forceWifiScan: función wlanapi no disponible:", err)
+			return
+		}
+	}
+
+	var handle windows.Handle
+	var negotiated uint32
+	if r, _, _ := procWlanOpenHandle.Call(2, 0,
+		uintptr(unsafe.Pointer(&negotiated)),
+		uintptr(unsafe.Pointer(&handle))); r != 0 {
+		a.Logger.Debugln("forceWifiScan: WlanOpenHandle falló:", r)
+		return
+	}
+	defer procWlanCloseHandle.Call(uintptr(handle), 0)
+
+	var list *wlanInterfaceInfoList
+	if r, _, _ := procWlanEnumInterfaces.Call(uintptr(handle), 0,
+		uintptr(unsafe.Pointer(&list))); r != 0 || list == nil {
+		a.Logger.Debugln("forceWifiScan: WlanEnumInterfaces falló:", r)
+		return
+	}
+	defer procWlanFreeMemory.Call(uintptr(unsafe.Pointer(list)))
+
+	step := unsafe.Sizeof(list.InterfaceInfo[0])
+	scanned := false
+	for i := uintptr(0); i < uintptr(list.NumberOfItems); i++ {
+		info := (*wlanInterfaceInfo)(unsafe.Add(unsafe.Pointer(&list.InterfaceInfo[0]), i*step))
+		guid := info.InterfaceGUID
+		if r, _, _ := procWlanScan.Call(uintptr(handle),
+			uintptr(unsafe.Pointer(&guid)), 0, 0, 0); r == 0 {
+			scanned = true
+		}
+	}
+	if scanned {
+		time.Sleep(wlanScanSettleTime)
+	}
+}
+
+// scanWifiBSSIDs fuerza un barrido activo (WlanScan) y luego lista las antenas
+// visibles con netsh, acumulando por cada BSSID su señal (%→dBm aprox.) y su canal.
+// Lista vacía si netsh falla o no hay WiFi (→ degradación a IP). No expone las MAC en
+// logs de nivel normal.
 func scanWifiBSSIDs(a *Agent) []wifiAP {
+	forceWifiScan(a)
 	out, err := exec.Command("netsh", "wlan", "show", "networks", "mode=bssid").Output()
 	if err != nil {
 		a.Logger.Debugln("scanWifiBSSIDs: netsh no disponible:", err)
