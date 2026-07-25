@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -95,6 +96,19 @@ func (a *Agent) GetLocation() Location {
 	}
 	a.Logger.Debugln("GetLocation: sin fix nativo ni por IP")
 	return Location{Source: SourceUnavailable, CapturedAt: now}
+}
+
+// RunGeolocation es el modo `-m geolocation`: diagnóstico de operación, análogo
+// a `-m publicip`. Toma la configuración vigente del servidor —igual que hace el
+// servicio— y reporta la ubicación que resolvería el ticker, para poder verificar
+// el proveedor y el flag de force-on sin esperar al próximo tick ni leer logs.
+func (a *Agent) RunGeolocation() {
+	conf := a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI())
+	a.GeoForceOn = conf.GeoForceOn
+
+	loc := a.GetLocation()
+	fmt.Printf("source=%s lat=%.7f long=%.7f accuracy_m=%d geo_enabled=%v force_on=%v\n",
+		loc.Source, loc.Lat, loc.Long, loc.AccuracyM, conf.GeoEnabled, conf.GeoForceOn)
 }
 
 // ipGeolocation resuelve una ubicación aproximada (nivel ciudad) a partir de la

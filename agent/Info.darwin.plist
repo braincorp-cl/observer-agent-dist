@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Feature 025 · Info.plist embebido en el binario macOS.
+
+  Se inyecta en la sección (__TEXT,__info_plist) del Mach-O al enlazar. Sin este
+  bloque CoreLocation deniega de inmediato (kCLErrorDomain code=1) y locationd
+  ni siquiera registra al cliente: validado en el spike Fase 0.
+
+  CFBundleIdentifier debe coincidir con geoBundleID de geolocation_darwin.go,
+  porque es la clave con la que se localiza la entrada en clients.plist.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>cl.observer.agent</string>
+  <key>CFBundleName</key>
+  <string>Observer RMM Agent</string>
+  <key>CFBundleExecutable</key>
+  <string>observer-agent</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSLocationUsageDescription</key>
+  <string>Observer RMM registra la ubicación de este equipo corporativo para el inventario de activos.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Observer RMM registra la ubicación de este equipo corporativo para el inventario de activos.</string>
+  <key>NSLocationAlwaysUsageDescription</key>
+  <string>Observer RMM registra la ubicación de este equipo corporativo para el inventario de activos.</string>
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>Observer RMM registra la ubicación de este equipo corporativo para el inventario de activos.</string>
+</dict>
+</plist>

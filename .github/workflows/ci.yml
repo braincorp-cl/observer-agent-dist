@@ -34,9 +34,39 @@ jobs:
             env CGO_ENABLED=0 GOOS=windows GOARCH=${i} go build -ldflags "-s -w"
           done
       
-      - name: Ensure mac agent compiles
+      # Sin cgo el proveedor macOS cae al stub de geolocation_nocgo_darwin.go y
+      # degrada a IP. Este paso existe para garantizar que ese camino siga
+      # compilando: es la red de seguridad de la feature 025.
+      - name: Ensure mac agent compiles (sin cgo, camino stub)
         run: |
           ARCHS='amd64 arm64'
           for i in ${ARCHS}; do
             env CGO_ENABLED=0 GOOS=darwin GOARCH=${i} go build -ldflags "-s -w"
           done
+
+      - name: Run unit tests
+        run: go test ./...
+
+  # El proveedor real de macOS (CoreLocation) es Objective-C vía cgo, así que no
+  # se puede cross-compilar desde Linux: necesita SDK de macOS. Este job compila
+  # de verdad esa ruta para que un error de cgo no llegue al release.
+  macos-cgo:
+    runs-on: macos-latest
+    name: Ensure mac agent compiles (cgo + CoreLocation)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
+      - name: Build darwin/arm64 con cgo
+        env:
+          CGO_ENABLED: '1'
+          GOOS: darwin
+          GOARCH: arm64
+        run: go build -ldflags "-s -w" -o /dev/null
+
+      - name: Run unit tests (darwin)
+        run: go test ./...

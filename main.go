@@ -105,6 +105,14 @@ func main() {
 		a.UninstallCleanup()
 	case "publicip":
 		fmt.Println(a.PublicIP())
+	case "geolocation":
+		// Diagnóstico: resuelve y muestra la ubicación con la config vigente.
+		a.RunGeolocation()
+	case "geoprobe":
+		// Feature 025 (macOS): el daemon se re-ejecuta con este modo en el
+		// contexto del usuario de consola, porque CoreLocation no atiende a la
+		// sesión 0. Imprime una sola línea (FIX/DENIED/NOFIX) que el padre parsea.
+		a.RunGeoProbe()
 	case "getpython":
 		a.GetPython(true)
 	case "installdeno":

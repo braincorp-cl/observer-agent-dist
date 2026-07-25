@@ -23,10 +23,6 @@ jobs:
             goarch: arm64
           - goos: linux
             goarch: arm
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +47,69 @@ jobs:
           fi
           go build -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o "${BINARY}"
           echo "BINARY=${BINARY}" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY }}
+          path: ${{ env.BINARY }}
+          retention-days: 1
+
+  # Feature 025: macOS ya NO se cross-compila desde Linux. El proveedor de
+  # ubicación es CoreLocation (Objective-C vía cgo), que exige SDK de macOS, y el
+  # binario necesita dos cosas más que solo se pueden hacer acá:
+  #   1. Embeber el Info.plist en (__TEXT,__info_plist). Sin él CoreLocation
+  #      deniega de inmediato y locationd ni siquiera registra al cliente.
+  #      Va por -extldflags porque cgo RECHAZA -sectcreate en #cgo LDFLAGS.
+  #   2. Firmar con --identifier IGUAL al CFBundleIdentifier del plist. Con el
+  #      identificador que pone el linker de Go por defecto ("a.out") locationd
+  #      no registra al cliente. Ambos hallazgos están validados en un Mac real.
+  # Se usan runners nativos por arquitectura para no cross-compilar cgo.
+  build-macos:
+    name: Build macOS binaries
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13      # x86_64
+            goarch: amd64
+          - runner: macos-latest  # Apple Silicon
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
+      - name: Set version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: '1'
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY="observeragent-${{ github.ref_name }}-darwin-${{ matrix.goarch }}"
+          PLIST="$(pwd)/agent/Info.darwin.plist"
+          go build \
+            -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }} -extldflags -Wl,-sectcreate,__TEXT,__info_plist,${PLIST}" \
+            -o "${BINARY}"
+          # El identificador debe coincidir con CFBundleIdentifier (ver arriba).
+          codesign -f -s - --identifier cl.observer.agent "${BINARY}"
+          echo "BINARY=${BINARY}" >> $GITHUB_ENV
+
+      - name: Verify Info.plist and signing identity
+        run: |
+          # Falla el release si el binario sale sin plist embebido o mal firmado:
+          # ambos son silenciosos en runtime (el agente degradaría a IP sin avisar).
+          otool -s __TEXT __info_plist "${BINARY}" | grep -q "__info_plist" \
+            || { echo "::error::falta la sección __info_plist"; exit 1; }
+          codesign -dv "${BINARY}" 2>&1 | grep -q "Identifier=cl.observer.agent" \
+            || { echo "::error::identificador de firma incorrecto"; exit 1; }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -111,7 +170,7 @@ jobs:
   release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build, build-windows-installer]
+    needs: [build, build-macos, build-windows-installer]
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
