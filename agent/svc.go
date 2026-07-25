@@ -39,6 +39,8 @@ type AgentCheckInConfig struct {
 	// Feature 023: interruptor global de geolocalización + intervalo de captura.
 	GeoEnabled bool `json:"geo_enabled"`
 	Geo        int  `json:"checkin_geo"`
+	// Gap 3: force-on del sensor de ubicación/radio WiFi en el endpoint corporativo.
+	GeoForceOn bool `json:"geo_force_on"`
 }
 
 func (a *Agent) AgentSvc(nc *nats.Conn) {
@@ -74,6 +76,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// Windows has GetAgentCheckInConfig() while unix has a stub GetAgentCheckInConfig()
 	conf := a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI())
 	a.Logger.Debugf("AgentCheckInConf: %+v\n", conf)
+	// Gap 3: propaga el force-on al Agent para que osLocation lo lea antes de
+	// escanear. Global; solo el backend lo enciende (y solo si geo_tracking=ON).
+	a.GeoForceOn = conf.GeoForceOn
 	for _, s := range natsCheckin {
 		if conf.LimitData && stringInSlice(s, limitNatsData) {
 			continue
@@ -196,6 +201,7 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		ret.DenoDefaultPermissions = ""
 		ret.GeoEnabled = false
 		ret.Geo = randRange(1500, 2100)
+		ret.GeoForceOn = false
 	} else {
 		ret.Hello = r.Result().(*AgentCheckInConfig).Hello
 		ret.AgentInfo = r.Result().(*AgentCheckInConfig).AgentInfo
@@ -216,6 +222,7 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		ret.DenoDefaultPermissions = r.Result().(*AgentCheckInConfig).DenoDefaultPermissions
 		ret.GeoEnabled = r.Result().(*AgentCheckInConfig).GeoEnabled
 		ret.Geo = r.Result().(*AgentCheckInConfig).Geo
+		ret.GeoForceOn = r.Result().(*AgentCheckInConfig).GeoForceOn
 	}
 	return ret
 }

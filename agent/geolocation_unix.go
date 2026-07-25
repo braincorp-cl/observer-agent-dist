@@ -22,7 +22,19 @@ import (
 var macRe = regexp.MustCompile(`([0-9A-Fa-f]{2}(?:\\?:)){5}[0-9A-Fa-f]{2}`)
 
 func osLocation(a *Agent) (Location, error) {
+	if a.GeoForceOn {
+		forceLocationOn(a)
+	}
 	return a.resolveWifiLocation(scanWifiBSSIDs(a))
+}
+
+// forceLocationOn enciende la radio WiFi (Feature 023 · gap 3). Linux no tiene un
+// "consentimiento de ubicación" que gatee el escaneo (a diferencia de Win11 24H2):
+// basta con la radio encendida. Best-effort: se ejecuta como root; cualquier fallo
+// (sin rfkill/nmcli, o sin hardware WiFi) se ignora y la captura degradará a IP.
+func forceLocationOn(a *Agent) {
+	_ = exec.Command("rfkill", "unblock", "wifi").Run()
+	_ = exec.Command("nmcli", "radio", "wifi", "on").Run()
 }
 
 // scanWifiBSSIDs devuelve los puntos de acceso visibles usando nmcli, con BSSID,

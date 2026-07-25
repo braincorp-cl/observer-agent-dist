@@ -36,6 +36,9 @@ var winPctRe = regexp.MustCompile(`(\d{1,3})\s*%`)
 var winChannelRe = regexp.MustCompile(`(?i)(?:channel|canal)\D+(\d+)`)
 
 func osLocation(a *Agent) (Location, error) {
+	if a.GeoForceOn {
+		forceLocationOn(a)
+	}
 	aps := scanWifiBSSIDs(a)
 	// Gap 3 (permiso activo): en Windows 11 24H2 / Server 2025 el escaneo de BSSIDs
 	// exige la ubicación del sistema ACTIVADA. Si el escaneo vino vacío y el
@@ -49,6 +52,53 @@ func osLocation(a *Agent) (Location, error) {
 		return Location{Source: SourceDenied}, nil
 	}
 	return a.resolveWifiLocation(aps)
+}
+
+// forceLocationOn habilita el sensor de ubicación del dispositivo y la radio WiFi
+// (Feature 023 · gap 3). Política: el endpoint es un ACTIVO CORPORATIVO y el agente
+// corre como SYSTEM; no hay opt-in del usuario final. Best-effort: cualquier fallo
+// se loguea y NO interrumpe la captura (que degradará a IP si el escaneo sigue
+// vacío). Es idempotente: si ya está permitido, reescribe el mismo valor.
+func forceLocationOn(a *Agent) {
+	// 1. Consentimiento de ubicación a nivel-dispositivo = Allow. ESTE es el gate
+	//    que Windows 11 24H2 / Server 2025 exige para que netsh/WlanScan lean
+	//    BSSIDs; sin él, un servicio SYSTEM no puede escanear (ni disparar prompt).
+	setLocationConsentAllow(a)
+	// 2. Servicio de geolocalización (lfsvc): arranque automático + iniciado.
+	_ = exec.Command("sc", "config", "lfsvc", "start=", "auto").Run()
+	_ = exec.Command("sc", "start", "lfsvc").Run()
+	// 3. Radio WiFi encendida (best-effort). netsh reactiva un adaptador
+	//    administrativamente deshabilitado; el soft-block de radio (airplane) por
+	//    WinRT Windows.Devices.Radios NO es fiable desde SYSTEM/sesión 0, así que
+	//    no dependemos de él (los endpoints corporativos rara vez lo tienen off).
+	for _, name := range []string{"Wi-Fi", "Wireless Network Connection", "WiFi"} {
+		_ = exec.Command("netsh", "interface", "set", "interface",
+			"name="+name, "admin=enabled").Run()
+	}
+}
+
+// setLocationConsentAllow pone el consentimiento de ubicación en "Allow" a nivel
+// dispositivo (HKLM) y de la cuenta de servicio (HKCU) y marca el estado del
+// servicio de ubicación. Best-effort por clave; loguea el fallo pero sigue.
+func setLocationConsentAllow(a *Agent) {
+	consent := `SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location`
+	for _, root := range []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER} {
+		k, _, err := registry.CreateKey(root, consent, registry.SET_VALUE)
+		if err != nil {
+			a.Logger.Debugln("forceLocationOn: no se pudo abrir ConsentStore:", err)
+			continue
+		}
+		if err := k.SetStringValue("Value", "Allow"); err != nil {
+			a.Logger.Debugln("forceLocationOn: no se pudo setear Location=Allow:", err)
+		}
+		k.Close()
+	}
+	if k, _, err := registry.CreateKey(registry.LOCAL_MACHINE,
+		`SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration`,
+		registry.SET_VALUE); err == nil {
+		_ = k.SetDWordValue("Status", 1)
+		k.Close()
+	}
 }
 
 // locationConsentDenied lee el interruptor de ubicación del dispositivo

@@ -75,6 +75,10 @@ type Agent struct {
 	NatsPingInterval   int
 	NatsWSCompression  bool
 	Insecure           bool
+	// Feature 023 · gap 3: force-on del sensor de ubicación/radio WiFi. Se setea
+	// desde la config de check-in (geo_force_on) al arrancar el servicio; lo lee
+	// osLocation antes de escanear. Activo corporativo: no hay opt-in del usuario.
+	GeoForceOn bool
 }
 
 const (
