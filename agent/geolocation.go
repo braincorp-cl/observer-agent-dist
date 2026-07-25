@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -123,5 +125,98 @@ func (a *Agent) ipGeolocation() (Location, error) {
 		Long:      body.Long,
 		AccuracyM: 20000, // nivel ciudad: precisión nominal ~20 km
 		Source:    SourceIP,
+	}, nil
+}
+
+// wifiAP es un punto de acceso WiFi visible, en el formato que consume tanto un
+// servicio MLS/BeaconDB como Google Geolocation API. Campos homologados con Prey
+// (lib/agent/providers/geo/strategies.js): macAddress + signalStrength + channel.
+// El canal mejora la precisión del fix; se omite si es 0 (desconocido). No se envía
+// ssid (Google lo ignora y es un dato de red sensible).
+type wifiAP struct {
+	MacAddress     string `json:"macAddress"`
+	SignalStrength int    `json:"signalStrength"`
+	Channel        int    `json:"channel,omitempty"`
+}
+
+// geoWifiBackendPath es el resolver WiFi→coordenadas del backend (Feature 023 · F4).
+// El agente le manda las antenas visibles y el backend las resuelve contra Google
+// con la API key viviendo SOLO en el servidor (modelo Prey): la key nunca se
+// distribuye a la flota. Se llama con a.rClient (autenticado con el token del agente).
+const geoWifiBackendPath = "/api/v3/geolocate/"
+
+// prepareWifiAPs homologa el pre-proceso de Prey antes de resolver
+// (strategies.js): descarta MACs del rango reservado IANA 00:00:5E (VRRP/virtuales,
+// no ubicables) y ordena por señal ascendente (mismo criterio que Prey, que lo
+// adoptó como mejora de precisión). Devuelve un slice nuevo; no muta la entrada.
+func prepareWifiAPs(aps []wifiAP) []wifiAP {
+	out := make([]wifiAP, 0, len(aps))
+	for _, ap := range aps {
+		if len(ap.MacAddress) >= 8 && strings.EqualFold(ap.MacAddress[:8], "00:00:5e") {
+			continue
+		}
+		out = append(out, ap)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].SignalStrength < out[j].SignalStrength
+	})
+	return out
+}
+
+// resolveWifiLocation toma las antenas WiFi visibles y las resuelve a coordenadas.
+// Orden de preferencia:
+//  1. OBSERVER_GEO_WIFI_URL, si está seteado → endpoint MLS/BeaconDB externo (sin
+//     autenticación, cliente propio). Pensado para pruebas directas contra un
+//     servicio público.
+//  2. Si no → el resolver del backend Observer RMM (a.rClient, autenticado), que
+//     consulta a Google con la key server-side.
+//
+// Sin antenas visibles → no disponible; GetLocation degradará a IP.
+func (a *Agent) resolveWifiLocation(aps []wifiAP) (Location, error) {
+	aps = prepareWifiAPs(aps)
+	if len(aps) == 0 {
+		return Location{Source: SourceUnavailable}, errNativeUnavailable
+	}
+	if url := geoEnv("OBSERVER_GEO_WIFI_URL", ""); url != "" {
+		c := resty.New()
+		c.SetHeader("User-Agent", a.AgentHeader)
+		c.SetTimeout(10 * time.Second)
+		if len(a.Proxy) > 0 {
+			c.SetProxy(a.Proxy)
+		}
+		return a.wifiGeolocation(c.R(), url, aps)
+	}
+	return a.wifiGeolocation(a.rClient.R(), geoWifiBackendPath, aps)
+}
+
+// wifiGeolocation envía las antenas al endpoint dado y parsea la respuesta. El
+// cuerpo (considerIp + wifiAccessPoints) y la respuesta ({location:{lat,lng},
+// accuracy}) siguen el formato de Google Geolocation API / MLS. considerIp=false:
+// solo aceptamos un fix WiFi real; la degradación a IP la maneja GetLocation con
+// su propio proveedor, evitando etiquetar como source=wifi un fallback por IP.
+func (a *Agent) wifiGeolocation(req *resty.Request, url string, aps []wifiAP) (Location, error) {
+	reqBody := map[string]interface{}{
+		"considerIp":       false,
+		"wifiAccessPoints": aps,
+	}
+	r, err := req.SetHeader("Content-Type", "application/json").SetBody(reqBody).Post(url)
+	if err != nil {
+		return Location{}, err
+	}
+	var resp struct {
+		Location struct {
+			Lat float64 `json:"lat"`
+			Lng float64 `json:"lng"`
+		} `json:"location"`
+		Accuracy float64 `json:"accuracy"`
+	}
+	if err := json.Unmarshal(r.Body(), &resp); err != nil {
+		return Location{}, err
+	}
+	return Location{
+		Lat:       resp.Location.Lat,
+		Long:      resp.Location.Lng,
+		AccuracyM: int(resp.Accuracy),
+		Source:    SourceWiFi,
 	}, nil
 }
