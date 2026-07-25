@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 // Feature 023 · provider Windows (F4).
@@ -34,7 +36,41 @@ var winPctRe = regexp.MustCompile(`(\d{1,3})\s*%`)
 var winChannelRe = regexp.MustCompile(`(?i)(?:channel|canal)\D+(\d+)`)
 
 func osLocation(a *Agent) (Location, error) {
-	return a.resolveWifiLocation(scanWifiBSSIDs(a))
+	aps := scanWifiBSSIDs(a)
+	// Gap 3 (permiso activo): en Windows 11 24H2 / Server 2025 el escaneo de BSSIDs
+	// exige la ubicación del sistema ACTIVADA. Si el escaneo vino vacío y el
+	// ConsentStore dice Deny, es ese gate (no "sin WiFi"): lo reportamos como
+	// denied —visible en la consola y accionable por GPO— en vez de degradar mudo a
+	// IP. Si hubo antenas (Win10 / Server 2019-2022 no gatean el escaneo), o si no
+	// se puede afirmar la negativa, resolvemos/degradamos normal.
+	if len(aps) == 0 && locationConsentDenied() {
+		a.Logger.Infoln("geo: ubicación del sistema desactivada (ConsentStore=Deny); " +
+			"el escaneo WiFi no es posible. Actívala por GPO para geolocalizar por WiFi.")
+		return Location{Source: SourceDenied}, nil
+	}
+	return a.resolveWifiLocation(aps)
+}
+
+// locationConsentDenied lee el interruptor de ubicación del dispositivo
+// (HKLM\...\CapabilityAccessManager\ConsentStore\location, valor "Value"). Devuelve
+// true SOLO si está explícitamente en "Deny". Si no se puede leer (clave ausente,
+// build antiguo, sin permiso), devuelve false: ante la duda NO bloqueamos —dejamos
+// que GetLocation degrade a IP— para no perder el fix por una lectura fallida.
+func locationConsentDenied() bool {
+	k, err := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location`,
+		registry.QUERY_VALUE,
+	)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue("Value")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(v), "Deny")
 }
 
 // scanWifiBSSIDs lista las antenas visibles con netsh, acumulando por cada BSSID su

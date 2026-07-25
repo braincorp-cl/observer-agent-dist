@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -177,6 +178,27 @@ func (a *Agent) resolveWifiLocation(aps []wifiAP) (Location, error) {
 	if len(aps) == 0 {
 		return Location{Source: SourceUnavailable}, errNativeUnavailable
 	}
+	// Gap 4b (skip/caché en el agente): si el entorno WiFi (las antenas más
+	// fuertes) no cambió desde el último fix y sigue fresco, reusamos las
+	// coordenadas y evitamos el round-trip al backend (y, aguas abajo, una consulta
+	// a Google). La firma ES la detección de cambio de red: si cambia el conjunto de
+	// antenas, el siguiente tick vuelve a resolver. GetLocation re-estampa
+	// CapturedAt, así que el punto se reporta como capturado ahora.
+	sig := wifiSignature(aps)
+	if loc, ok := geoCacheGet(sig); ok {
+		a.Logger.Debugln("geo: fix WiFi reusado de caché (entorno sin cambios); sin round-trip")
+		return loc, nil
+	}
+	loc, err := a.resolveWifiUncached(aps)
+	if err == nil && validCoords(loc.Lat, loc.Long) {
+		geoCachePut(sig, loc)
+	}
+	return loc, err
+}
+
+// resolveWifiUncached hace la resolución real (sin tocar la caché): endpoint MLS
+// externo si OBSERVER_GEO_WIFI_URL está seteado, o el resolver del backend.
+func (a *Agent) resolveWifiUncached(aps []wifiAP) (Location, error) {
 	if url := geoEnv("OBSERVER_GEO_WIFI_URL", ""); url != "" {
 		c := resty.New()
 		c.SetHeader("User-Agent", a.AgentHeader)
@@ -187,6 +209,54 @@ func (a *Agent) resolveWifiLocation(aps []wifiAP) (Location, error) {
 		return a.wifiGeolocation(c.R(), url, aps)
 	}
 	return a.wifiGeolocation(a.rClient.R(), geoWifiBackendPath, aps)
+}
+
+// Caché de fix WiFi en el agente (Gap 4b). Un solo proceso = un solo agente, así
+// que basta un estado a nivel de paquete protegido por mutex.
+var (
+	geoCacheMu  sync.Mutex
+	geoCacheSig string
+	geoCacheLoc Location
+	geoCacheAt  time.Time
+)
+
+// geoCacheTTL: refresco de respaldo aunque el equipo siga quieto (por si el fix
+// cacheado fue pobre). Entre medio, mientras el entorno WiFi no cambie, se reusa.
+const geoCacheTTL = time.Hour
+
+// wifiSignature firma el entorno WiFi por las N antenas MÁS FUERTES (estables).
+// aps llega ordenado por señal ascendente (prepareWifiAPs), así que las fuertes
+// son las últimas. Firmar con las más fuertes evita que antenas débiles que
+// parpadean entre escaneos invaliden la caché en cada tick.
+func wifiSignature(aps []wifiAP) string {
+	const n = 6
+	start := 0
+	if len(aps) > n {
+		start = len(aps) - n
+	}
+	macs := make([]string, 0, len(aps)-start)
+	for _, ap := range aps[start:] {
+		macs = append(macs, strings.ToLower(ap.MacAddress))
+	}
+	sort.Strings(macs)
+	return strings.Join(macs, ",")
+}
+
+func geoCacheGet(sig string) (Location, bool) {
+	geoCacheMu.Lock()
+	defer geoCacheMu.Unlock()
+	if geoCacheSig == sig && !geoCacheAt.IsZero() && time.Since(geoCacheAt) < geoCacheTTL {
+		return geoCacheLoc, true
+	}
+	return Location{}, false
+}
+
+func geoCachePut(sig string, loc Location) {
+	geoCacheMu.Lock()
+	defer geoCacheMu.Unlock()
+	geoCacheSig = sig
+	geoCacheLoc = loc
+	geoCacheAt = time.Now()
 }
 
 // wifiGeolocation envía las antenas al endpoint dado y parsea la respuesta. El
