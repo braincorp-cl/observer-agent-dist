@@ -64,17 +64,16 @@ jobs:
   #   2. Firmar con --identifier IGUAL al CFBundleIdentifier del plist. Con el
   #      identificador que pone el linker de Go por defecto ("a.out") locationd
   #      no registra al cliente. Ambos hallazgos están validados en un Mac real.
-  # Se usan runners nativos por arquitectura para no cross-compilar cgo.
+  # Ambas arquitecturas salen del runner Apple Silicon: los runners Intel
+  # (macos-13) ya no se asignan —GitHub los está retirando— y dejaban el release
+  # colgado en cola indefinidamente. El SDK de macOS es universal, así que el
+  # cross-compile a x86_64 con cgo funciona pasándole el -arch a clang.
   build-macos:
     name: Build macOS binaries
+    runs-on: macos-latest
     strategy:
       matrix:
-        include:
-          - runner: macos-13      # x86_64
-            goarch: amd64
-          - runner: macos-latest  # Apple Silicon
-            goarch: arm64
-    runs-on: ${{ matrix.runner }}
+        goarch: [amd64, arm64]
 
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +94,12 @@ jobs:
         run: |
           BINARY="observeragent-${{ github.ref_name }}-darwin-${{ matrix.goarch }}"
           PLIST="$(pwd)/agent/Info.darwin.plist"
+          # cgo no infiere la arquitectura destino: hay que decirle a clang que
+          # cruce a x86_64 cuando se compila amd64 en un runner Apple Silicon.
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            export CGO_CFLAGS="-arch x86_64"
+            export CGO_LDFLAGS="-arch x86_64"
+          fi
           go build \
             -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }} -extldflags -Wl,-sectcreate,__TEXT,__info_plist,${PLIST}" \
             -o "${BINARY}"
