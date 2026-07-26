@@ -110,3 +110,64 @@ func TestReadProcEnvironInexistente(t *testing.T) {
 		t.Error("se esperaba error leyendo un pid inexistente")
 	}
 }
+
+// Las cuatro sesiones de abajo son la salida REAL de `loginctl show-session` en
+// un Kali con LightDM donde nadie había entrado (medido en staging el
+// 2026-07-26). El caso que importa es el greeter: es gráfico, tiene Display=:0 y
+// está activo, así que sin exigir `Class=user` el agente le mandaba el `alert` a
+// la pantalla de login y contestaba `ok`.
+func TestSessionIsUsableDescartaGreeterYNoGraficas(t *testing.T) {
+	cases := []struct {
+		nombre     string
+		salida     string
+		wantUsable bool
+		wantActive bool
+	}{
+		{
+			nombre:     "greeter de LightDM (nadie entró)",
+			salida:     "Id=c1\nUser=118\nName=lightdm\nType=x11\nClass=greeter\nActive=yes\nState=active\nDisplay=:0\n",
+			wantUsable: false,
+		},
+		{
+			nombre:     "sesión manager-early del display manager",
+			salida:     "Id=1\nUser=118\nName=lightdm\nType=unspecified\nClass=manager-early\nActive=yes\nState=active\nDisplay=\n",
+			wantUsable: false,
+		},
+		{
+			nombre:     "consola SSH/tty de un usuario real",
+			salida:     "Id=894\nUser=1002\nName=observer\nType=tty\nClass=user\nActive=yes\nState=active\nDisplay=\n",
+			wantUsable: false,
+		},
+		{
+			nombre:     "escritorio de un usuario real",
+			salida:     "Id=3\nUser=1000\nName=juan\nType=x11\nClass=user\nActive=yes\nState=active\nDisplay=:10\n",
+			wantUsable: true,
+			wantActive: true,
+		},
+		{
+			nombre:     "escritorio de usuario aún no marcado activo (sirve de respaldo)",
+			salida:     "Id=4\nUser=1000\nName=juan\nType=wayland\nClass=user\nActive=no\nState=opening\nDisplay=\n",
+			wantUsable: true,
+			wantActive: false,
+		},
+	}
+
+	for _, c := range cases {
+		usable, active := sessionIsUsable(parseLoginctlProps([]byte(c.salida)))
+
+		if usable != c.wantUsable {
+			t.Errorf("%s: usable=%v, se esperaba %v", c.nombre, usable, c.wantUsable)
+		}
+		if usable && active != c.wantActive {
+			t.Errorf("%s: active=%v, se esperaba %v", c.nombre, active, c.wantActive)
+		}
+	}
+}
+
+func TestMinUserUIDNuncaDevuelveCero(t *testing.T) {
+	// Si devolviera 0 el respaldo por /proc aceptaría cuentas de servicio —
+	// incluida la del greeter, que es el agujero que este umbral cierra.
+	if got := minUserUID(); got == 0 {
+		t.Error("minUserUID devolvió 0: el filtro de cuentas de sistema quedaría anulado")
+	}
+}

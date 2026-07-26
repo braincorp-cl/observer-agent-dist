@@ -154,9 +154,10 @@ func (a *Agent) findUserSession() (*userSession, error) {
 
 // loginctlActiveSession pregunta a systemd-logind por la sesión activa.
 //
-// Se exige que sea gráfica (`x11`/`wayland`) y activa. Una sesión `tty` existe
-// pero no tiene dónde dibujar un diálogo, y una sesión inactiva es un usuario
-// que dejó la sesión abierta en otro asiento.
+// Se exige que sea gráfica (`x11`/`wayland`), de clase `user` y activa. Una
+// sesión `tty` existe pero no tiene dónde dibujar un diálogo; el greeter del
+// display manager sí es gráfico pero no hay nadie detrás; y una sesión inactiva
+// es un usuario que dejó la sesión abierta en otro asiento.
 // logindSession es lo que systemd-logind sabe de una sesión.
 type logindSession struct {
 	uid       uint32
@@ -194,15 +195,8 @@ func loginctlActiveSession() (*logindSession, error) {
 			continue
 		}
 
-		// Se exige que la sesión sea gráfica. Verificado en un equipo real: el
-		// propio display manager (LightDM) aparece como sesión activa con
-		// `Type=unspecified`, y las consolas abiertas como `Type=tty`. Sin este
-		// filtro elegiríamos la sesión de LightDM —donde no hay nadie— en vez de
-		// la del usuario.
-		graphical := props["Type"] == "x11" || props["Type"] == "wayland"
-		active := props["Active"] == "yes" && props["State"] == "active"
-
-		if !graphical {
+		usable, active := sessionIsUsable(props)
+		if !usable {
 			continue
 		}
 
@@ -231,10 +225,37 @@ func loginctlActiveSession() (*logindSession, error) {
 	return nil, fmt.Errorf("loginctl no reportó ninguna sesión gráfica")
 }
 
+// sessionIsUsable decide si en una sesión de logind hay una persona a la que se
+// le puede dibujar algo. Vive aparte del recorrido para poder probarla con la
+// salida real de `loginctl show-session` sin necesitar logind en el test.
+//
+// Los dos filtros hacen falta y ambos se midieron en equipos reales:
+//
+//   - `Type`: el propio display manager abre una sesión `manager-early` con
+//     `Type=unspecified`, y las consolas quedan como `Type=tty`. Ninguna de las
+//     dos tiene dónde dibujar un diálogo.
+//   - `Class`: cuando NADIE ha entrado, el greeter de LightDM deja una sesión con
+//     `Type=x11`, `Display=:0` y `Active=yes` que pasa el filtro de arriba.
+//     Escribir ahí manda el mensaje a la PANTALLA DE LOGIN y la acción reporta
+//     `ok` sin que ningún usuario la vea — exactamente la mentira que estos
+//     códigos de error existen para evitar. Sólo `Class=user` es una persona.
+//
+// `active` se devuelve aparte porque una sesión gráfica de usuario que todavía no
+// está marcada activa sirve como respaldo: algunos display managers reportan el
+// estado con retraso.
+func sessionIsUsable(props map[string]string) (usable, active bool) {
+	graphical := props["Type"] == "x11" || props["Type"] == "wayland"
+	userSess := props["Class"] == "user"
+	active = props["Active"] == "yes" && props["State"] == "active"
+
+	return graphical && userSess, active
+}
+
 func loginctlSessionProps(sessionID string) (map[string]string, error) {
 	out, err := exec.Command("loginctl", "show-session", sessionID,
 		"--property=Active", "--property=State", "--property=Type",
-		"--property=Name", "--property=User", "--property=Display").Output()
+		"--property=Class", "--property=Name", "--property=User",
+		"--property=Display").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +279,31 @@ func parseLoginctlProps(out []byte) map[string]string {
 // scanProcForDesktopUser es el respaldo para sistemas sin logind (o donde
 // `loginctl` no está en el PATH del servicio): busca en /proc un proceso no-root
 // que tenga un bus de sesión, que es la huella de un escritorio vivo.
+// minUserUID devuelve el primer uid que corresponde a una persona y no a una
+// cuenta de servicio. No se hardcodea 1000: la flota incluye distribuciones
+// antiguas donde el umbral era 500, así que se lee UID_MIN de /etc/login.defs y
+// 1000 queda sólo como respaldo (el valor de Debian/Ubuntu/RHEL actuales).
+func minUserUID() uint32 {
+	const fallback = 1000
+
+	data, err := os.ReadFile("/etc/login.defs")
+	if err != nil {
+		return fallback
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "UID_MIN" {
+			continue
+		}
+		if v, err := strconv.ParseUint(fields[1], 10, 32); err == nil && v > 0 {
+			return uint32(v)
+		}
+	}
+
+	return fallback
+}
+
 func scanProcForDesktopUser() (uint32, string, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -287,8 +333,13 @@ func scanProcForDesktopUser() (uint32, string, error) {
 		if err != nil {
 			continue
 		}
+		// Se descartan las cuentas de sistema, no sólo root. El greeter del display
+		// manager corre como una cuenta de sistema (lightdm = uid 118) y SÍ tiene
+		// DISPLAY y bus de sesión, así que sin este filtro este respaldo elegiría
+		// la pantalla de login igual que hacía loginctl antes de exigir
+		// `Class=user`.
 		st, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid == 0 {
+		if !ok || st.Uid < minUserUID() {
 			continue
 		}
 
