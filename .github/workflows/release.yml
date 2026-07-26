@@ -9,8 +9,42 @@ permissions:
   contents: write
 
 jobs:
+  # Todo release nuevo DEBE traer el detalle de los cambios de la version.
+  # Esto corre ANTES de compilar y corta el release si falta el archivo, por dos
+  # razones: falla en segundos en vez de despues de ~3 min de builds, y no deja
+  # publicada una release a medias que despues haya que editar a mano.
+  #
+  # El motivo del gate: `generate_release_notes` produce un enlace "Full Changelog"
+  # y nada mas, y una lista de mensajes de commit no le sirve a quien tiene que
+  # decidir si actualiza la flota. Entre v2.11.0 y v2.14.2 —nueve releases— todas
+  # salieron con ese stub. Ver release-notes/README.md.
+  validate-notes:
+    name: Validate release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure release-notes/<tag>.md exists and is not a stub
+        run: |
+          NOTES="release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::Falta $NOTES. Todo release debe traer el detalle de los cambios de la version (ver release-notes/README.md)."
+            exit 1
+          fi
+          if ! grep -q '^## Cambios en esta versión' "$NOTES"; then
+            echo "::error::$NOTES no tiene la seccion '## Cambios en esta versión'."
+            exit 1
+          fi
+          # Un archivo con el encabezado pero sin vinetas debajo es un stub.
+          if ! awk '/^## Cambios en esta versión/{f=1; next} /^## /{f=0} f && /^- /{found=1} END{exit !found}' "$NOTES"; then
+            echo "::error::$NOTES no lista ningun cambio bajo '## Cambios en esta versión'."
+            exit 1
+          fi
+          echo "OK: $NOTES ($(wc -l < "$NOTES") lineas)"
+
   build:
     name: Build binaries
+    needs: [validate-notes]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,6 +104,7 @@ jobs:
   # cross-compile a x86_64 con cgo funciona pasándole el -arch a clang.
   build-macos:
     name: Build macOS binaries
+    needs: [validate-notes]
     runs-on: macos-latest
     strategy:
       matrix:
@@ -125,6 +160,7 @@ jobs:
 
   build-windows-installer:
     name: Build Windows installer
+    needs: [validate-notes]
     runs-on: windows-latest
     strategy:
       matrix:
@@ -175,8 +211,12 @@ jobs:
   release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build, build-macos, build-windows-installer]
+    needs: [validate-notes, build, build-macos, build-windows-installer]
     steps:
+      # El checkout es solo para poder leer release-notes/<tag>.md: este job antes
+      # no clonaba el repo porque le bastaban los artifacts.
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -187,7 +227,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: binaries/*
-          generate_release_notes: true
+          # El cuerpo sale del archivo versionado, NO de generate_release_notes
+          # (que solo emite un enlace "Full Changelog"). El job validate-notes ya
+          # garantizo que el archivo existe y lista cambios.
+          name: Observer RMM Agent ${{ github.ref_name }}
+          body_path: release-notes/${{ github.ref_name }}.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
