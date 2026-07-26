@@ -107,16 +107,39 @@ func (a *Agent) showAlert(title, message string) error {
 	return errNoDialogTool
 }
 
+// lockCandidates son las herramientas del escritorio que bloquean la pantalla.
+//
+// A diferencia de `loginctl`, el código de salida de éstas SÍ dice algo: hablan
+// directamente con el bloqueador y fallan si no está corriendo. Van primero las
+// específicas de cada bloqueador —que son las que fallan de verdad cuando no
+// corresponden— y `xdg-screensaver`, el genérico, después.
+var lockCandidates = [][]string{
+	{"xscreensaver-command", "-lock"},
+	{"gnome-screensaver-command", "--lock"},
+	{"light-locker-command", "--lock"},
+	{"xflock4"},
+	{"xdg-screensaver", "lock"},
+	// dm-tool salta al greeter del display manager, que en la práctica también
+	// deja la sesión bloqueada.
+	{"dm-tool", "lock"},
+}
+
 // lockScreen bloquea la sesión.
 //
-// `loginctl lock-session` es el camino preferido y tiene una ventaja sobre todo
-// lo demás: lo ejecuta root directamente, sin necesidad de entrar a la sesión del
-// usuario. systemd le manda la señal de bloqueo al gestor de sesión, y GNOME, KDE
-// y los demás escritorios modernos la respetan.
+// `loginctl lock-session` se prueba primero porque lo ejecuta root sin entrar a la
+// sesión del usuario, pero **su código de salida no sirve como prueba de que algo
+// se bloqueó**: sale 0 por el solo hecho de entregarle la señal a logind, que la
+// reenvía a quien esté escuchando. Si nadie escucha, no pasa nada y el 0 igual
+// llega.
 //
-// El respaldo son las herramientas del escritorio, que sí necesitan correr como
-// el usuario. `xdg-screensaver` es el genérico; los otros dos cubren escritorios
-// que no lo traen.
+// Eso no es teórico: medido en un Ubuntu 24.04 real con LXQt + xscreensaver, la
+// señal se entregaba, `loginctl` salía 0 y la pantalla NUNCA se bloqueaba —
+// xscreensaver no escucha a logind. El agente contestaba `ok` y el operador
+// quedaba creyendo que un equipo estaba bloqueado cuando no lo estaba, que en una
+// función antirrobo es el peor error posible.
+//
+// Por eso el éxito de esta vía exige confirmación de logind (`LockedHint`), y si
+// no llega se sigue con las herramientas del escritorio.
 func (a *Agent) lockScreen() error {
 	sess, err := a.findUserSession()
 	if err != nil {
@@ -126,37 +149,70 @@ func (a *Agent) lockScreen() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if sess.SessionID != "" {
-		if loginctl, err := exec.LookPath("loginctl"); err == nil {
-			cmd := exec.CommandContext(ctx, loginctl, "lock-session", sess.SessionID)
-			if err := cmd.Run(); err == nil {
+	loginctl, loginctlErr := exec.LookPath("loginctl")
+
+	if sess.SessionID != "" && loginctlErr == nil {
+		cmd := exec.CommandContext(ctx, loginctl, "lock-session", sess.SessionID)
+		if err := cmd.Run(); err == nil {
+			if a.lockedHintConfirmed(ctx, loginctl, sess.SessionID) {
 				a.Logger.Debugln("lockScreen: bloqueado con loginctl lock-session", sess.SessionID)
 				return nil
 			}
-			a.Logger.Debugln("lockScreen: loginctl lock-session no funcionó, se prueban las herramientas del escritorio")
+			a.Logger.Debugln("lockScreen: loginctl entregó la señal pero nadie la respetó (LockedHint sigue en no); se prueban las herramientas del escritorio")
+		} else {
+			a.Logger.Debugln("lockScreen: loginctl lock-session falló:", err)
 		}
 	}
 
-	fallbacks := [][]string{
-		{"xdg-screensaver", "lock"},
-		{"gnome-screensaver-command", "--lock"},
-		{"dm-tool", "lock"},
-		{"loginctl", "lock-sessions"},
-	}
-
-	for _, f := range fallbacks {
+	for _, f := range lockCandidates {
 		bin, err := exec.LookPath(f[0])
 		if err != nil {
 			continue
 		}
 		cmd := a.newSessionCmdFor(ctx, sess, bin, f[1:]...)
-		if err := cmd.Run(); err == nil {
-			a.Logger.Debugln("lockScreen: bloqueado con", f[0])
-			return nil
+		if err := cmd.Run(); err != nil {
+			a.Logger.Debugln("lockScreen:", f[0], "falló:", err)
+			continue
 		}
+
+		// Se registra si logind lo confirma o no, pero no se exige: hay
+		// bloqueadores que bloquean sin avisarle a logind, y devolver
+		// `lock_unavailable` con la pantalla ya bloqueada sería igual de
+		// engañoso. Acá el código de salida sí es evidencia.
+		if sess.SessionID != "" && loginctlErr == nil &&
+			!a.lockedHintConfirmed(ctx, loginctl, sess.SessionID) {
+			a.Logger.Debugln("lockScreen: bloqueado con", f[0], "(logind no reporta LockedHint)")
+		} else {
+			a.Logger.Debugln("lockScreen: bloqueado con", f[0])
+		}
+
+		return nil
 	}
 
 	return errLockUnavailable
+}
+
+// lockedHintConfirmed espera a que logind reporte la sesión como bloqueada.
+//
+// Se consulta en un bucle corto porque el bloqueo no es instantáneo: logind avisa,
+// el escritorio dibuja y sólo entonces llama a SetLockedHint. Un chequeo único
+// justo después de mandar la señal daría negativo incluso cuando sí funcionó.
+func (a *Agent) lockedHintConfirmed(ctx context.Context, loginctl, sessionID string) bool {
+	for i := 0; i < 10; i++ {
+		out, err := exec.CommandContext(ctx, loginctl, "show-session", sessionID,
+			"--property=LockedHint").Output()
+		if err == nil && parseLoginctlProps(out)["LockedHint"] == "yes" {
+			return true
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	return false
 }
 
 func (a *Agent) alarmLoopCmd(ctx context.Context) (*exec.Cmd, error) {
