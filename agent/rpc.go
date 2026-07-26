@@ -651,6 +651,67 @@ func (a *Agent) RunRPC() {
 					a.CmdV2(opts)
 				}
 			}()
+		// Feature 028 · respuesta rápida de endpoint (lock / alert / alarm).
+		//
+		// Las tres responden "ok" o un CÓDIGO de error (ver ResponseCode en
+		// response.go). El código —no el texto— es lo que permite que la consola
+		// muestre el motivo en el idioma del operador. Y el motivo importa: que no
+		// haya sesión gráfica significa que el mensaje NO se vio o que no había
+		// pantalla que bloquear; devolver un "ok" genérico sería mentirle.
+		case "lock":
+			go func() {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				a.Logger.Debugln("Bloqueando la sesión del usuario")
+				err := a.LockScreen()
+				if err != nil {
+					a.Logger.Errorln("LockScreen:", err.Error())
+				}
+				ret.Encode(ResponseCode(err))
+				msg.Respond(resp)
+			}()
+
+		case "alert":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				a.Logger.Debugln("Mostrando mensaje al usuario")
+				err := a.ShowAlert(p.Data["title"], p.Data["message"])
+				if err != nil {
+					a.Logger.Errorln("ShowAlert:", err.Error())
+				}
+				ret.Encode(ResponseCode(err))
+				msg.Respond(resp)
+			}(payload)
+
+		case "alarm":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// La duración viaja como texto en el payload; si no viene o no se
+				// puede leer, PlayAlarm aplica su propio valor por defecto y su tope.
+				seconds, _ := strconv.Atoi(p.Data["duration"])
+				a.Logger.Debugln("Haciendo sonar la alarma por", seconds, "segundos")
+				err := a.PlayAlarm(seconds)
+				if err != nil {
+					a.Logger.Errorln("PlayAlarm:", err.Error())
+				}
+				ret.Encode(ResponseCode(err))
+				msg.Respond(resp)
+			}(payload)
+
+		case "stopalarm":
+			go func() {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				a.Logger.Debugln("Deteniendo la alarma")
+				// StopAlarm es idempotente: detener cuando no hay nada sonando no es
+				// un error, así que siempre responde ok.
+				a.StopAlarm()
+				ret.Encode(RespOK)
+				msg.Respond(resp)
+			}()
+
 		case "needsreboot":
 			go func() {
 				a.Logger.Debugln("Checking if reboot needed")

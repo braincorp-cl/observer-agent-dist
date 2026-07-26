@@ -147,21 +147,10 @@ func (a *Agent) RunGeoProbe() {
 // consoleUser devuelve uid y nombre del usuario con sesión en consola. Devuelve
 // error cuando no hay nadie logueado: en el arranque o en un Mac headless
 // /dev/console pertenece a root o a una cuenta de sistema (prefijo "_").
-func consoleUser() (string, string, error) {
-	out, err := exec.Command("/usr/bin/stat", "-f", "%u %Su", "/dev/console").Output()
-	if err != nil {
-		return "", "", err
-	}
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) != 2 {
-		return "", "", fmt.Errorf("salida inesperada de stat: %q", string(out))
-	}
-	uid, name := fields[0], fields[1]
-	if uid == "0" || name == "root" || strings.HasPrefix(name, "_") {
-		return "", "", fmt.Errorf("sin sesión de usuario (console=%s)", name)
-	}
-	return uid, name, nil
-}
+// consoleUser se movió a `usersession_darwin.go` en la feature 028 para que
+// también exista en un binario sin cgo: las acciones lock/alert/alarm necesitan
+// el mismo helper y no requieren CoreLocation. `darwin && cgo` (este archivo) es
+// un subconjunto de `darwin`, así que se sigue viendo desde acá.
 
 // runGeoProbeAsUser re-ejecuta el propio binario en el contexto del usuario de
 // consola. `launchctl asuser` mete el proceso en el dominio de sesión del
