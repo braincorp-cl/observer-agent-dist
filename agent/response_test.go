@@ -2,6 +2,8 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,10 +54,16 @@ func TestFirstExistingDevuelveVacioSiNoHayNada(t *testing.T) {
 }
 
 func TestFirstExistingEligeElPrimeroQueEsta(t *testing.T) {
-	// /etc/hostname existe en cualquier unix; sirve como sustituto de un sonido.
-	got := firstExisting([]string{"/no/existe/a.wav", "/etc/hostname"})
+	// El archivo se crea acá en vez de apuntar a uno del sistema: /etc/hostname
+	// NO existe en macOS y el test fallaba solo en ese runner.
+	presente := filepath.Join(t.TempDir(), "sonido.wav")
+	if err := os.WriteFile(presente, []byte("x"), 0o600); err != nil {
+		t.Fatalf("no se pudo crear el archivo de prueba: %v", err)
+	}
 
-	if got != "/etc/hostname" {
+	got := firstExisting([]string{"/no/existe/a.wav", presente})
+
+	if got != presente {
 		t.Errorf("no eligió la ruta que sí existe: %q", got)
 	}
 }
