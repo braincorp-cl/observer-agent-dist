@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -40,13 +41,44 @@ var alarmSounds = []string{
 //   - pmset displaysleepnow duerme la pantalla. Bloquea de verdad **sólo si** el
 //     equipo tiene activado pedir contraseña al despertar. Es el respaldo, no el
 //     método preferido, justamente por esa condición.
+//
+// ⚠️ Medido en macOS 26.5.2 (Apple Silicon, 2026-07-26): **CGSession YA NO
+// EXISTE** en esa ruta. En un Mac moderno el `os.Stat` lo descarta y el único
+// camino real es el respaldo — es decir, el método que sólo bloquea si el equipo
+// pide contraseña al despertar. Por eso el éxito de esta acción NO puede
+// deducirse del código de salida; ver screenLockConfirmed.
+//
+// `needsConfirm` marca a cuál de los dos NO se le cree el código de salida, con
+// el mismo criterio que se usó en Linux: se exige confirmación sólo donde el
+// exit 0 no dice nada del efecto.
+//
+//   - CGSession -suspend habla con el servidor de ventanas y falla si no puede
+//     cambiar de sesión, así que su 0 sí es evidencia.
+//   - pmset displaysleepnow sale 0 por el mero hecho de apagar la pantalla,
+//     bloquee o no. Ese 0 es el que hay que verificar.
 var lockCandidates = []struct {
-	path string
-	args []string
+	path         string
+	args         []string
+	needsConfirm bool
 }{
-	{"/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", []string{"-suspend"}},
-	{"/usr/bin/pmset", []string{"displaysleepnow"}},
+	{"/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", []string{"-suspend"}, false},
+	{"/usr/bin/pmset", []string{"displaysleepnow"}, true},
 }
+
+const (
+	// lockConfirmInterval y lockConfirmTries acotan la espera por candidato: el
+	// bloqueo no es instantáneo (medido: la clave aparece a los ~0,4 s), pero
+	// tampoco puede eternizarse.
+	lockConfirmInterval = 250 * time.Millisecond
+	lockConfirmTries    = 20
+
+	// lockTimeout es el techo de toda la operación. Está deliberadamente por
+	// DEBAJO de los 15 s con los que el servidor espera esta acción
+	// (`_endpoint_response` en agents/views.py): si nos pasáramos, el operador
+	// vería `agent_unreachable` —un problema de red— cuando lo que ocurrió es que
+	// no se pudo bloquear. Peor diagnóstico, mismo fallo.
+	lockTimeout = 12 * time.Second
+)
 
 func (a *Agent) showAlert(title, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
@@ -80,7 +112,7 @@ func (a *Agent) showAlert(title, message string) error {
 }
 
 func (a *Agent) lockScreen() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
 	defer cancel()
 
 	for _, c := range lockCandidates {
@@ -93,14 +125,89 @@ func (a *Agent) lockScreen() error {
 			return err
 		}
 
-		if err := cmd.Run(); err == nil {
+		if err := cmd.Run(); err != nil {
+			a.Logger.Debugln("lockScreen: falló", c.path, "— probando el siguiente")
+			continue
+		}
+
+		if !c.needsConfirm {
 			a.Logger.Debugln("lockScreen: bloqueado con", c.path)
 			return nil
 		}
-		a.Logger.Debugln("lockScreen: falló", c.path, "— probando el siguiente")
+
+		// Acá el código de salida NO es evidencia: `pmset displaysleepnow` apaga
+		// la pantalla y sale 0 aunque el equipo no pida contraseña al despertar,
+		// con lo que el operador recibiría `ok` sobre una máquina que quedó
+		// abierta. En una función antirrobo esa es la peor mentira posible.
+		if a.screenLockConfirmed(ctx) {
+			a.Logger.Debugln("lockScreen: bloqueado con", c.path, "(confirmado por el SO)")
+			return nil
+		}
+
+		a.Logger.Debugln("lockScreen:", c.path,
+			"salió 0 pero el SO no reporta la pantalla bloqueada — probando el siguiente")
 	}
 
 	return errLockUnavailable
+}
+
+// screenLockConfirmed espera a que el SO reporte la pantalla efectivamente
+// bloqueada. Devuelve false si no lo confirma dentro del plazo.
+//
+// Se pregunta en bucle porque el bloqueo no es instantáneo: `pmset` vuelve
+// enseguida y loginwindow tarda en levantar la cortina y marcar la sesión
+// (medido en macOS 26.5.2: ~0,4 s).
+func (a *Agent) screenLockConfirmed(ctx context.Context) bool {
+	for i := 0; i < lockConfirmTries; i++ {
+		if screenIsLocked(ctx) {
+			return true
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(lockConfirmInterval):
+		}
+	}
+
+	return false
+}
+
+// screenIsLocked le pregunta al SO por el estado real de la pantalla.
+//
+// Deliberadamente NO se toma "ya no hay usuario en /dev/console" como prueba de
+// bloqueo. Sería cómodo para cubrir el cambio rápido de usuario, pero **no se
+// pudo medir** qué le pasa al dueño de /dev/console con la pantalla dormida: si
+// resultara pasar a root, esa rama daría "bloqueado" siempre y anularía esta
+// verificación entera. El cambio rápido de usuario ya está cubierto por otro
+// lado — CGSession no necesita confirmación (ver lockCandidates).
+func screenIsLocked(ctx context.Context) bool {
+	out, err := exec.CommandContext(ctx, ioregPath,
+		"-n", "Root", "-d1", "-r", "-k", "IOConsoleUsers").Output()
+
+	return err == nil && ioregScreenIsLocked(out)
+}
+
+const ioregPath = "/usr/sbin/ioreg"
+
+// ioregScreenIsLocked busca la marca de pantalla bloqueada en la salida de
+// `ioreg -n Root -d1 -r -k IOConsoleUsers`.
+//
+// La clave **sólo existe cuando está bloqueado**: desbloqueado no aparece como
+// `=No`, sencillamente no está. Por eso se busca su presencia con el valor `Yes`
+// y no se intenta leer un booleano.
+//
+// Se normalizan los espacios porque ioreg no es consistente: dentro del
+// diccionario escribe `"CGSSessionScreenIsLocked"=Yes` (sin espacios) y en el
+// nivel de arriba `"IOConsoleLocked" = No` (con ellos).
+//
+// ℹ️ `IOConsoleLocked` también pasa a `Yes` al bloquear y sería más barato de
+// leer, pero NO se usa: no se pudo medir si distingue "hay una cortina en
+// pantalla" de "pide credencial", y confiar en una señal sin verificar es
+// exactamente el error que este cambio corrige.
+func ioregScreenIsLocked(out []byte) bool {
+	compact := strings.ReplaceAll(string(out), " ", "")
+	return strings.Contains(compact, `"CGSSessionScreenIsLocked"=Yes`)
 }
 
 func (a *Agent) alarmLoopCmd(ctx context.Context) (*exec.Cmd, error) {
