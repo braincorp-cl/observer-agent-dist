@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Feature 028 · puente hacia la sesión del usuario en macOS.
@@ -65,14 +66,34 @@ func (a *Agent) newUserSessionCmd(ctx context.Context, exe string, args ...strin
 
 	full := append([]string{"asuser", uid, "/usr/bin/sudo", "-u", username, exe}, args...)
 
-	return exec.CommandContext(ctx, "/bin/launchctl", full...), nil
+	cmd := exec.CommandContext(ctx, "/bin/launchctl", full...)
+
+	// Grupo de procesos propio, igual que en Linux. Sin esto todo el árbol hereda
+	// el grupo del PROPIO AGENTE — medido en macOS 26.5.2: el bucle de la alarma
+	// tenía PGID = pid del agente. O sea que no existía ningún grupo que matar sin
+	// matarse a sí mismo, y la única herramienta era `KillProc`, que recorre el
+	// árbol por el enlace padre-hijo y por eso se queda sin nada que recorrer en
+	// cuanto el padre muere. Nadie en la cadena (`launchctl`, `sudo`, `sh`) crea
+	// grupo propio, así que basta pedirlo acá para que lo hereden los tres.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	return cmd, nil
 }
 
-// killUserSessionCmd mata el proceso y sus hijos: el bucle de la alarma es un
-// shell que lanza un `afplay` por repetición.
+// killUserSessionCmd mata el grupo de procesos completo.
+//
+// El signo negativo es la clave: `kill(-pgid)` alcanza a `launchctl`, al `sudo`,
+// al `/bin/sh` del bucle y al `afplay` que esté sonando en ese momento, y sigue
+// funcionando aunque el líder del grupo ya sea un cadáver. Eso es justamente lo
+// que `KillProc` no podía hacer.
 func killUserSessionCmd(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = KillProc(int32(cmd.Process.Pid))
+
+	pid := cmd.Process.Pid
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		// Si el grupo no se creó o ya no existe, se cae al pid suelto.
+		_ = KillProc(int32(pid))
+	}
 }

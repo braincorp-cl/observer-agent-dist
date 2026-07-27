@@ -5,11 +5,14 @@ package agent
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Feature 028 · el `exit 0` de pmset no prueba que se bloqueó.
@@ -117,6 +120,108 @@ func TestBloqueoContraElEquipoReal(t *testing.T) {
 
 	t.Logf("bloqueo CONFIRMADO por el SO en %v", time.Since(inicio).Round(10*time.Millisecond))
 	t.Log("⚠️  la pantalla quedó bloqueada: hay que desbloquearla a mano")
+}
+
+// afplayPids devuelve los `afplay` vivos.
+//
+// Se usa `pgrep -x` y no `ps | grep` por una razón medida: el 2026-07-26 un
+// `grep -c afplay` lanzado por SSH se contó a sí mismo y reportó alarma con la
+// máquina en silencio.
+func afplayPids(t *testing.T) []string {
+	t.Helper()
+
+	out, err := exec.Command("/usr/bin/pgrep", "-x", "afplay").Output()
+	if err != nil {
+		// pgrep sale 1 cuando no hay coincidencias. Eso es silencio, no un fallo.
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return nil
+		}
+		t.Fatalf("pgrep falló: %v", err)
+	}
+
+	return strings.Fields(string(out))
+}
+
+// esperarAfplay sondea hasta `limite` a que haya sonido (o a que se haga
+// silencio, según `quiero`).
+func esperarAfplay(t *testing.T, quiero bool, limite time.Duration) ([]string, bool) {
+	t.Helper()
+
+	fin := time.Now().Add(limite)
+	for {
+		pids := afplayPids(t)
+		if (len(pids) > 0) == quiero {
+			return pids, true
+		}
+		if time.Now().After(fin) {
+			return pids, false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestDetenerAlarmaNoDejaBucleHuerfano es la prueba del arreglo de T001, y
+// **hace sonar la alarma de verdad**: por eso va detrás de
+// `OBSERVER_E2E_ALARM=1`.
+//
+//	sudo OBSERVER_E2E_ALARM=1 ./agent.test -test.v -test.run TestDetenerAlarmaNoDejaBucleHuerfano
+//
+// Lo que verifica no es que el sonido se corte —eso pasaba incluso con el bug,
+// porque el `afplay` en vuelo termina su .aiff— sino que **no vuelva a nacer**.
+// Con el bucle huérfano en PID 1 el silencio duraba una repetición y después
+// arrancaba la siguiente, para siempre.
+//
+// Se repite varias vueltas porque el bug era una carrera entre dos goroutines:
+// una sola pasada verde no distingue "arreglado" de "esta vez gané la carrera".
+func TestDetenerAlarmaNoDejaBucleHuerfano(t *testing.T) {
+	if os.Getenv("OBSERVER_E2E_ALARM") != "1" {
+		t.Skip("hace sonar la alarma de verdad; se activa con OBSERVER_E2E_ALARM=1")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("hay que correrlo con sudo: el puente a la sesión usa launchctl asuser")
+	}
+
+	const vueltas = 6
+
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	a := &Agent{Logger: log}
+
+	if pids := afplayPids(t); len(pids) > 0 {
+		t.Fatalf("ya había sonido antes de empezar (afplay %v): el test no probaría nada", pids)
+	}
+
+	for v := 1; v <= vueltas; v++ {
+		// Duración larga a propósito: si el stop no funcionara, no quiero que lo
+		// tape el vencimiento del plazo. Con el bug esto sonaba los 120 s enteros.
+		if err := a.PlayAlarm(120); err != nil {
+			t.Fatalf("vuelta %d: PlayAlarm falló: %v", v, err)
+		}
+
+		pids, ok := esperarAfplay(t, true, 5*time.Second)
+		if !ok {
+			t.Fatalf("vuelta %d: la alarma no llegó a sonar en 5 s", v)
+		}
+
+		inicio := time.Now()
+		a.StopAlarm()
+
+		if _, ok := esperarAfplay(t, false, 5*time.Second); !ok {
+			t.Fatalf("vuelta %d: seguía sonando 5 s después del stop (afplay %v)",
+				v, afplayPids(t))
+		}
+		silencio := time.Since(inicio)
+
+		// El rebrote es la firma del bug, y es lo que el "ok" de la API no veía.
+		time.Sleep(2 * time.Second)
+		if revividos := afplayPids(t); len(revividos) > 0 {
+			t.Fatalf("vuelta %d: el bucle quedó huérfano — afplay %v revivió 2 s "+
+				"después del stop", v, revividos)
+		}
+
+		t.Logf("vuelta %d: sonó (afplay %v), se detuvo en %v, sin rebrote",
+			v, pids, silencio.Round(10*time.Millisecond))
+	}
 }
 
 // TestSoloPmsetExigeConfirmacion congela la decisión de diseño: a `pmset` no se

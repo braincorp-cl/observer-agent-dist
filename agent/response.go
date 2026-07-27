@@ -39,6 +39,11 @@ const (
 	// única salida sería apagarlo.
 	alarmMaxSeconds = 300
 
+	// alarmStopGrace es lo que StopAlarm espera a que la goroutine confirme que ya
+	// mató el árbol de sonido. Existe porque PlayAlarm llama a StopAlarm antes de
+	// arrancar la siguiente alarma: sin la espera, las dos se solapan un instante.
+	alarmStopGrace = 3 * time.Second
+
 	// alertMaxTitleLen y alertMaxBodyLen recortan el texto del operador antes de
 	// pasarlo al diálogo del SO. No es validación de seguridad (el texto nunca
 	// se interpola en un script, viaja por variables de entorno o argv), es
@@ -113,8 +118,18 @@ func ResponseCode(err error) string {
 // una a la vez: un segundo `alarm` reemplaza al primero en vez de sumarle otra
 // fuente de ruido encima.
 type alarmState struct {
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	mu sync.Mutex
+	// stop se cierra para pedir el término; done lo cierra la goroutine cuando ya
+	// mató el árbol de sonido.
+	//
+	// Acá NO se guarda el `cancel` del contexto, y eso es el arreglo: cancelarlo
+	// desde afuera despertaba a DOS goroutines con el mismo `ctx.Done()` — la que
+	// Go registra dentro de `CommandContext`, que mata al padre, y la nuestra, que
+	// mata el árbol. Si ganaba la primera, `KillProc` llegaba a un cadáver y se iba
+	// sin tocar a los nietos: el bucle de sonido quedaba huérfano en PID 1 y no
+	// paraba nunca. Medido en macOS el 2026-07-27 (PPID=1, PGID=pid del agente).
+	stop chan struct{}
+	done chan struct{}
 	// epoch numera las alarmas para que la goroutine de una alarma vieja no
 	// borre el `cancel` de la que la reemplazó. Sin esto: llega un segundo
 	// `alarm`, StopAlarm despierta a la goroutine de la primera, y esa goroutine
@@ -179,26 +194,34 @@ func (a *Agent) PlayAlarm(seconds int) error {
 		return err
 	}
 
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
 	runningAlarm.mu.Lock()
 	runningAlarm.epoch++
 	myEpoch := runningAlarm.epoch
-	runningAlarm.cancel = cancel
+	runningAlarm.stop = stop
+	runningAlarm.done = done
 	runningAlarm.mu.Unlock()
 
 	go func() {
+		defer close(done)
+
 		timer := time.NewTimer(time.Duration(seconds) * time.Second)
 		defer timer.Stop()
 
 		select {
 		case <-timer.C:
 			a.Logger.Debugln("PlayAlarm: se cumplió la duración, deteniendo")
-		case <-ctx.Done():
+		case <-stop:
 			a.Logger.Debugln("PlayAlarm: detenida antes de tiempo")
 		}
 
-		// Matar el árbol de procesos, no sólo el padre: el bucle de sonido es un
-		// shell que lanza un reproductor hijo por cada repetición, y matar sólo
-		// el shell dejaría el último sonido colgado.
+		// El orden es lo que arregla el bug: matar el árbol con el padre TODAVÍA
+		// VIVO, y sólo después cancelar el contexto. Al revés, el vigilante de
+		// `CommandContext` mata al padre primero y el bucle de sonido sobrevive
+		// huérfano. Los dos caminos —duración y detención— pasan por acá, así que
+		// no hay uno bueno y uno malo como antes.
 		killUserSessionCmd(cmd)
 		cancel()
 
@@ -207,7 +230,8 @@ func (a *Agent) PlayAlarm(seconds int) error {
 
 		runningAlarm.mu.Lock()
 		if runningAlarm.epoch == myEpoch {
-			runningAlarm.cancel = nil
+			runningAlarm.stop = nil
+			runningAlarm.done = nil
 		}
 		runningAlarm.mu.Unlock()
 	}()
@@ -219,12 +243,22 @@ func (a *Agent) PlayAlarm(seconds int) error {
 // alarma sonando no es un error.
 func (a *Agent) StopAlarm() {
 	runningAlarm.mu.Lock()
-	cancel := runningAlarm.cancel
-	runningAlarm.cancel = nil
+	stop, done := runningAlarm.stop, runningAlarm.done
+	runningAlarm.stop, runningAlarm.done = nil, nil
 	runningAlarm.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	if stop == nil {
+		return
+	}
+
+	// Sacarlos del estado bajo el mutex garantiza que sólo un llamado cierra el
+	// canal, así que no hace falta proteger el close de un doble cierre.
+	close(stop)
+
+	select {
+	case <-done:
+	case <-time.After(alarmStopGrace):
+		a.Logger.Debugln("StopAlarm: la alarma no confirmó su término en", alarmStopGrace)
 	}
 }
 
