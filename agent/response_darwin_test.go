@@ -4,6 +4,9 @@
 package agent
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +72,51 @@ func TestIoregScreenIsLocked(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBloqueoContraElEquipoReal ejecuta la verificación nueva contra la máquina
+// donde corre, y **bloquea la pantalla de verdad**.
+//
+// Por eso está detrás de `OBSERVER_E2E_LOCK=1`: en CI no hay sesión gráfica y en
+// el equipo de alguien dejaría la pantalla bloqueada sin avisar. Se corre a mano,
+// en un Mac con sesión abierta, sabiendo que después hay que desbloquear:
+//
+//	OBSERVER_E2E_LOCK=1 ./agent.test -test.v -test.run TestBloqueoContraElEquipoReal
+//
+// Es la prueba que faltaba cuando se escribió el fix: los otros tests congelan el
+// parser con muestras capturadas, y este verifica que en el equipo real la clave
+// aparece de verdad —y en cuánto tiempo— después de que `pmset` sale 0.
+func TestBloqueoContraElEquipoReal(t *testing.T) {
+	if os.Getenv("OBSERVER_E2E_LOCK") != "1" {
+		t.Skip("bloquea la pantalla de verdad; se activa con OBSERVER_E2E_LOCK=1")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	if screenIsLocked(ctx) {
+		t.Fatal("la pantalla ya estaba bloqueada: desbloqueá antes de correr esto, " +
+			"o el test no prueba nada")
+	}
+	t.Log("estado inicial: desbloqueado (la clave NO está presente)")
+
+	// Se invoca directo, sin `launchctl asuser`, porque el test ya corre como el
+	// usuario de consola. El puente es lo que necesita el agente por ser un
+	// demonio del sistema; acá sólo interesa el efecto de pmset.
+	salida, err := exec.CommandContext(ctx, "/usr/bin/pmset", "displaysleepnow").CombinedOutput()
+	if err != nil {
+		t.Fatalf("pmset displaysleepnow falló: %v (%s)", err, salida)
+	}
+	t.Log("pmset displaysleepnow salió 0 — que es justamente lo que NO prueba nada")
+
+	inicio := time.Now()
+	if !(&Agent{}).screenLockConfirmed(ctx) {
+		t.Fatalf("el SO no confirmó el bloqueo en %v; en este equipo debería "+
+			"(revisá `sysadminctl -screenLock status`)", lockTimeout)
+	}
+
+	t.Logf("bloqueo CONFIRMADO por el SO en %v", time.Since(inicio).Round(10*time.Millisecond))
+	t.Log("⚠️  la pantalla quedó bloqueada: hay que desbloquearla a mano")
 }
 
 // TestSoloPmsetExigeConfirmacion congela la decisión de diseño: a `pmset` no se
