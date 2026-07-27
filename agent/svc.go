@@ -10,6 +10,12 @@ import (
 	nats "github.com/nats-io/nats.go"
 )
 
+// geoMinInterval es el piso de la captura de ubicación, en segundos. La geo es una
+// feature de baja frecuencia por diseño: seguir a alguien de cerca no es el caso de
+// uso, y un intervalo corto por config —o por un error de tipeo en el servidor—
+// convertiría la flota en un rastreador.
+const geoMinInterval = 300
+
 func (a *Agent) RunAsService(nc *nats.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -118,19 +124,25 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	checkInWMITicker := time.NewTicker(time.Duration(conf.WMI) * time.Second)
 	syncMeshTicker := time.NewTicker(time.Duration(conf.SyncMesh) * time.Second)
 
-	// Feature 023: ticker de geolocalización (baja frecuencia). El intervalo tiene
-	// un piso de seguridad (nunca alta frecuencia). Si el interruptor global está
-	// apagado, el ticker se detiene: su canal nunca dispara, así el select de abajo
-	// queda inerte sin ramas condicionales. (TODO: disparo adicional al detectar
-	// cambio de red — diferido; el ticker cubre la captura periódica garantizada.)
-	geoInterval := conf.Geo
-	if geoInterval < 300 {
-		geoInterval = 300
-	}
+	// Feature 023: ticker de geolocalización (baja frecuencia, con piso de seguridad).
+	//
+	// El ticker **nunca se detiene** y el interruptor se **re-evalúa en cada tick**.
+	// Antes se hacía `Stop()` cuando el interruptor venía apagado, y eso convertía un
+	// fallo transitorio en una avería permanente y silenciosa: si el agente arranca sin
+	// DNS —un portátil recién encendido, o antes de que suba la VPN— el repliegue de
+	// `GetCheckInConfFromAPI` devuelve `GeoEnabled=false`, el ticker quedaba detenido
+	// para toda la vida del proceso, y la geolocalización no volvía hasta que alguien
+	// reiniciaba el agente. Medido en un Mac el 2026-07-27: 2 h 30 min sin un solo
+	// punto, con `geo_tracking_enabled=True` en el servidor todo el tiempo.
+	//
+	// Y arregla la dirección que importa más: hasta ahora **apagar** la geo en la
+	// consola tampoco surtía efecto hasta que el agente reiniciara. Para un
+	// interruptor de privacidad, ése era el lado grave.
+	//
+	// (TODO: disparo adicional al detectar cambio de red — diferido; el ticker cubre
+	// la captura periódica garantizada.)
+	geoInterval := geoTickInterval(conf.Geo)
 	checkInGeoTicker := time.NewTicker(time.Duration(geoInterval) * time.Second)
-	if !conf.GeoEnabled {
-		checkInGeoTicker.Stop()
-	}
 
 	// Guard atómico: si un SyncMeshNodeID del tick anterior sigue corriendo,
 	// saltamos este tick en vez de solaparlos (backport v2.11.0 "fix ... race").
@@ -153,6 +165,31 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		case <-checkInWMITicker.C:
 			a.NatsMessage(nc, "agent-wmi")
 		case <-checkInGeoTicker.C:
+			// Una consulta de config por tick. El tick tiene piso de 300 s, así que
+			// esto es mucho menos tráfico que el ticker de `agent-hello` (30–60 s);
+			// va por HTTP y no por NATS, eso sí, o sea que toca Django. Si a escala de
+			// flota pesa, la perilla es subir `checkin_geo`: baja las capturas y las
+			// consultas juntas.
+			geoConf := a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI())
+
+			// Si el intervalo vigente cambió, se re-arma. Cubre el caso del arranque
+			// sin red, que dejaba puesto el intervalo del repliegue en vez del real.
+			if nuevo := geoTickInterval(geoConf.Geo); nuevo != geoInterval {
+				a.Logger.Debugf("geo: intervalo %ds -> %ds", geoInterval, nuevo)
+				geoInterval = nuevo
+				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
+			}
+
+			if !geoConf.GeoEnabled {
+				// Se registra: el silencio sin explicación era justamente el problema.
+				a.Logger.Debugln("geo: interruptor apagado en este tick, no se captura")
+				continue
+			}
+
+			// Gap 3: el force-on también se re-evalúa, porque con el repliegue llegaba
+			// siempre apagado. Se escribe desde esta misma goroutine, inmediatamente
+			// antes de la captura que lo lee, así que no hay carrera con ella.
+			a.GeoForceOn = geoConf.GeoForceOn
 			a.NatsMessage(nc, "agent-geolocation")
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
@@ -176,32 +213,53 @@ func (a *Agent) AgentStartup() {
 	}
 }
 
+// checkInConfFallback son los valores que usa el agente cuando NO pudo leer la
+// config del servidor. Va en su propia función para poder congelar en tests lo que
+// el repliegue promete: ahí vivía un bug silencioso, porque `GeoEnabled=false`
+// combinado con un ticker que se detenía para siempre dejaba la geolocalización
+// muerta hasta el próximo reinicio del agente.
+//
+// Los intervalos van aleatorizados a propósito: reparten en el tiempo a una flota
+// que se reconecta junta (un corte de red, un arranque masivo).
+func checkInConfFallback() AgentCheckInConfig {
+	return AgentCheckInConfig{
+		Hello:     randRange(30, 60),
+		AgentInfo: randRange(200, 400),
+		WinSvc:    randRange(2400, 3000),
+		PubIP:     randRange(300, 500),
+		Disks:     randRange(1000, 2000),
+		SW:        randRange(2800, 3500),
+		WMI:       randRange(3000, 4000),
+		SyncMesh:  randRange(800, 1200),
+
+		// La geo se apaga en el repliegue, y eso está bien: es una feature sensible
+		// y sin respuesta del servidor no se sabe si el operador la quiere encendida.
+		// Lo que cambió es el intervalo, que antes era 1500–2100 s: ahora que el
+		// interruptor se re-evalúa en cada tick, este número dejó de significar "cada
+		// cuánto capturo estando roto" y pasó a significar "en cuánto me doy cuenta de
+		// la config real". Un valor largo hoy es estrictamente peor.
+		GeoEnabled: false,
+		Geo:        randRange(geoMinInterval, geoMinInterval*2),
+		GeoForceOn: false,
+	}
+}
+
+// geoTickInterval aplica el piso de seguridad al intervalo de geolocalización: pase
+// lo que pase por config, la captura nunca es de alta frecuencia.
+func geoTickInterval(fromConf int) int {
+	if fromConf < geoMinInterval {
+		return geoMinInterval
+	}
+	return fromConf
+}
+
 func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 	ret := AgentCheckInConfig{}
 	url := fmt.Sprintf("/api/v3/%s/config/", a.AgentID)
 	r, err := a.rClient.R().SetResult(&AgentCheckInConfig{}).Get(url)
 	if err != nil {
 		a.Logger.Debugln("GetAgentCheckInConfig()", err)
-		ret.Hello = randRange(30, 60)
-		ret.AgentInfo = randRange(200, 400)
-		ret.WinSvc = randRange(2400, 3000)
-		ret.PubIP = randRange(300, 500)
-		ret.Disks = randRange(1000, 2000)
-		ret.SW = randRange(2800, 3500)
-		ret.WMI = randRange(3000, 4000)
-		ret.SyncMesh = randRange(800, 1200)
-		ret.LimitData = false
-		ret.InstallNushell = false
-		ret.InstallNushellVersion = ""
-		ret.InstallNushellUrl = ""
-		ret.NushellEnableConfig = false
-		ret.InstallDeno = false
-		ret.InstallDenoVersion = ""
-		ret.InstallDenoUrl = ""
-		ret.DenoDefaultPermissions = ""
-		ret.GeoEnabled = false
-		ret.Geo = randRange(1500, 2100)
-		ret.GeoForceOn = false
+		ret = checkInConfFallback()
 	} else {
 		ret.Hello = r.Result().(*AgentCheckInConfig).Hello
 		ret.AgentInfo = r.Result().(*AgentCheckInConfig).AgentInfo
