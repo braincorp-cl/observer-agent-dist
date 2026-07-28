@@ -159,7 +159,7 @@ func withEndpointVolume(fn func(*audioEndpointVolume) error) error {
 		uintptr(eRender),
 		uintptr(eConsole),
 		uintptr(unsafe.Pointer(&device)))
-	if hr != 0 {
+	if comFailed(hr) {
 		return ole.NewError(hr)
 	}
 	defer device.Release()
@@ -171,7 +171,7 @@ func withEndpointVolume(fn func(*audioEndpointVolume) error) error {
 		uintptr(clsctxAll),
 		0,
 		uintptr(unsafe.Pointer(&endpoint)))
-	if hr != 0 {
+	if comFailed(hr) {
 		return ole.NewError(hr)
 	}
 	defer endpoint.Release()
@@ -189,7 +189,7 @@ func (a *Agent) readVolume() (volumeState, error) {
 		hr, _, _ := syscall.SyscallN(e.vtbl().GetMasterVolumeLevelScalar,
 			uintptr(unsafe.Pointer(e)),
 			uintptr(unsafe.Pointer(&level)))
-		if hr != 0 {
+		if comFailed(hr) {
 			return ole.NewError(hr)
 		}
 
@@ -198,7 +198,7 @@ func (a *Agent) readVolume() (volumeState, error) {
 		hr, _, _ = syscall.SyscallN(e.vtbl().GetMute,
 			uintptr(unsafe.Pointer(e)),
 			uintptr(unsafe.Pointer(&muted)))
-		if hr != 0 {
+		if comFailed(hr) {
 			return ole.NewError(hr)
 		}
 
@@ -227,7 +227,7 @@ func (a *Agent) setVolume(v volumeState) error {
 			uintptr(unsafe.Pointer(e)),
 			uintptr(math.Float32bits(float32(clampLevel(v.Level)))),
 			0) // pguidEventContext = NULL
-		if hr != 0 {
+		if comFailed(hr) {
 			return ole.NewError(hr)
 		}
 
@@ -240,11 +240,17 @@ func (a *Agent) setVolume(v volumeState) error {
 			muted = 1
 		}
 
+		// ⚠️ `SetMute` devuelve **S_FALSE** —no S_OK— cuando el estado de
+		// silencio ya era el pedido, que es el caso más común de todos: la
+		// alarma manda `SetMute(false)` sobre un equipo que no está
+		// silenciado. Medido en `LAPTOP-DSHQMP1O` el 2026-07-28. Por eso acá
+		// se pregunta por `comFailed` y no por "distinto de cero": la
+		// diferencia era un equipo que se quedaba al 100 % para siempre.
 		hr, _, _ = syscall.SyscallN(e.vtbl().SetMute,
 			uintptr(unsafe.Pointer(e)),
 			uintptr(muted),
 			0)
-		if hr != 0 {
+		if comFailed(hr) {
 			return ole.NewError(hr)
 		}
 
