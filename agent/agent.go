@@ -349,7 +349,14 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 	if c.IsScript {
 		envCmd = gocmd.NewCmdOptions(cmdOptions, c.Shell, c.Args...) // call script directly
 	} else if c.IsExecutable {
-		envCmd = gocmd.NewCmdOptions(cmdOptions, c.Shell, c.Command) // c.Shell: bin + c.Command: args as one string
+		// c.Shell: binario; c.Command: primer argumento; c.Args: los siguientes.
+		//
+		// Los argumentos van como elementos separados y NO concatenados en una
+		// sola cadena porque acá no hay shell que divida por espacios: exec
+		// entrega cada elemento tal cual, así que "-a --b=1" llegaría como UN
+		// argumento con un espacio adentro y el binario lo rechazaría.
+		execArgs := append([]string{c.Command}, c.Args...)
+		envCmd = gocmd.NewCmdOptions(cmdOptions, c.Shell, execArgs...)
 	} else {
 		commandArray := append(strings.Fields(c.Shell), "-c", c.Command)
 		envCmd = gocmd.NewCmdOptions(cmdOptions, commandArray[0], commandArray[1:]...) // /bin/bash -c 'ls -l /var/log/...'

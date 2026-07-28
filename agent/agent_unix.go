@@ -391,6 +391,13 @@ func (a *Agent) NixMeshNodeID() string {
 	opts.IsExecutable = true
 	opts.Shell = a.MeshSystemEXE
 	opts.Command = "-nodeid"
+	// `--no-embedded=1` salta el instalador JS anexado al binario que MeshCentral
+	// entrega para instalar; sin esta bandera, `-nodeid` dispara una
+	// reinstalación completa en vez de responder. El detalle está en
+	// meshnodeid.go. El ORDEN está medido: la bandera va DESPUÉS de `-nodeid`,
+	// al revés no devuelve nada. Es la misma bandera con la que el propio
+	// instalador de Mesh deja armada la unidad systemd del servicio.
+	opts.Args = []string{"--no-embedded=1"}
 
 	// Tope de intentos para evitar un bucle infinito si Mesh nunca queda listo
 	// (backport v2.11.0 "fix infinite loop race"). Antes: for !meshSuccess sin salida.
@@ -402,10 +409,8 @@ func (a *Agent) NixMeshNodeID() string {
 		a.Logger.Debugln("NixMeshNodeID() Stdout:", out.Stdout)
 		a.Logger.Debugln("NixMeshNodeID() Stderr:", out.Stderr)
 
-		notReady := meshNodeID == "" || strings.Contains(strings.ToLower(meshNodeID), "graphical version") || strings.Contains(strings.ToLower(meshNodeID), "zenity")
-
-		if !notReady {
-			return meshNodeID
+		if esNodeIDValido(meshNodeID) {
+			return strings.TrimSpace(meshNodeID)
 		}
 
 		a.Logger.Debugf("Meshnodeid not ready, attempt %d/%d", attempt, maxAttempts)
@@ -413,8 +418,14 @@ func (a *Agent) NixMeshNodeID() string {
 			time.Sleep(1 * time.Second)
 		}
 	}
-	a.Logger.Debugln("Failed to get meshnodeid after max attempts")
-	return "error getting meshnodeid"
+
+	// Se devuelve la cadena VACÍA y no un mensaje de error: lo que salga de acá
+	// se concatena en el comando de instalación que el .sh arma y después pasa
+	// por `eval`, así que un texto con espacios se ejecutaría como argumentos
+	// sueltos. Vacío hace que el .sh omita `--meshnodeid` y que el id lo
+	// sincronice después SyncMeshNodeID.
+	a.Logger.Debugln("Failed to get meshnodeid after max attempts; stdout:", meshNodeID)
+	return ""
 }
 
 func (a *Agent) getMeshNodeID() (string, error) {
