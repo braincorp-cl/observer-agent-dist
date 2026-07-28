@@ -51,6 +51,23 @@ const (
 	// arrancar la siguiente alarma: sin la espera, las dos se solapan un instante.
 	alarmStopGrace = 3 * time.Second
 
+	// Fase 2 · vigilancia del reproductor.
+	//
+	// El proceso que suena puede morir antes de la hora: lo mata quien tenga el
+	// equipo desde el administrador de tareas, o se cae solo. Sin vigilante eso
+	// dejaba el peor estado posible y en silencio — equipo mudo, volumen clavado
+	// al máximo reafirmándose cada segundo, el archivo de estado diciendo
+	// `forever` (o sea que volvía a "sonar" mudo en el próximo arranque) y la
+	// consola convencida de que la alarma seguía corriendo. Un `ok` falso más.
+	//
+	// En Windows basta con matar UN proceso (el bucle entero es un PowerShell);
+	// en macOS y Linux hay que matar el `sh` del bucle, porque matar sólo al
+	// reproductor lo relanza el propio `while`.
+
+	// alarmRespawnMaxConsecutive es cuántos fallos seguidos aguanta una alarma CON
+	// DURACIÓN antes de rendirse. La eterna no se rinde nunca (ver alarmGivesUp).
+	alarmRespawnMaxConsecutive = 5
+
 	// alertMaxTitleLen y alertMaxBodyLen recortan el texto del operador antes de
 	// pasarlo al diálogo del SO. No es validación de seguridad (el texto nunca
 	// se interpola en un script, viaja por variables de entorno o argv), es
@@ -145,7 +162,133 @@ type alarmState struct {
 	epoch uint64
 }
 
+// Tiempos de la vigilancia del reproductor.
+//
+// Son `var` y no `const` para que las pruebas puedan comprimirlos. El bucle de
+// supervisión sólo se prueba de verdad esperando sus propias esperas, y con los
+// valores de producción el camino de rendición —seis fallos seguidos con backoff
+// que se duplica— tardaría más de un minuto por caso. Nada en producción los
+// reasigna.
+var (
+	// alarmRespawnMinUptime es cuánto tiene que haber vivido un reproductor para
+	// que su muerte NO cuente como fallo consecutivo. Distingue "alguien lo está
+	// matando a mano" de "no arranca": lo segundo se repite en milisegundos.
+	alarmRespawnMinUptime = 5 * time.Second
+
+	// alarmRespawnBaseBackoff y alarmRespawnMaxBackoff acotan la espera entre
+	// reintentos. Sin espera, un reproductor que falla al arrancar convertiría la
+	// alarma en un bucle de spawn a toda velocidad.
+	alarmRespawnBaseBackoff = time.Second
+	alarmRespawnMaxBackoff  = 30 * time.Second
+)
+
 var runningAlarm alarmState
+
+// alarmPlayer es el proceso que hace el ruido, con su `Wait` ya en curso.
+//
+// El Wait vive en una goroutine propia y su resultado se publica en `exited`
+// porque hacen falta las dos cosas a la vez: cosechar el proceso (sin el Wait
+// cada alarma dejaba un zombi) y poder ENTERARSE de que murió desde el `select`
+// del supervisor. Un `cmd.Wait()` llamado en línea sólo da lo primero.
+type alarmPlayer struct {
+	cmd       *exec.Cmd
+	exited    chan error
+	startedAt time.Time
+	// dead marca que su salida ya se consumió del canal. Sin esta marca el
+	// teardown se quedaría esperando en `exited` un valor que nadie va a mandar,
+	// y le sumaría la gracia entera de 3 s a cada apagado.
+	dead bool
+}
+
+// alarmSpawner es el arranque del reproductor.
+//
+// Es una variable de paquete y no una llamada directa por una sola razón: que las
+// pruebas puedan sustituirlo por un proceso trivial. El bucle de supervisión es la
+// parte de la Fase 2 que más importa —es la que evita el silencio inadvertido— y no
+// puede quedar sin cobertura porque en la máquina de pruebas no haya audio ni
+// sesión gráfica.
+var alarmSpawner = (*Agent).startAlarmPlayer
+
+// startAlarmPlayer lanza el bucle de sonido en la sesión del usuario.
+func (a *Agent) startAlarmPlayer(ctx context.Context) (*alarmPlayer, error) {
+	cmd, err := a.alarmLoopCmd(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	p := &alarmPlayer{
+		cmd:       cmd,
+		exited:    make(chan error, 1),
+		startedAt: time.Now(),
+	}
+
+	// Buffer de 1 para que esta goroutine no quede colgada si nadie llega a leer
+	// el canal (el caso del teardown, que puede matar sin volver al select).
+	go func() { p.exited <- cmd.Wait() }()
+
+	return p, nil
+}
+
+// stop mata el árbol de sonido y espera a que quede cosechado.
+//
+// Esperar la cosecha es parte del orden del teardown y no un detalle: el volumen
+// se devuelve DESPUÉS de que el sonido murió, para que el último reproductor en
+// vuelo no alcance a sonar al máximo.
+func (p *alarmPlayer) stop(grace time.Duration) {
+	if p == nil || p.dead {
+		return
+	}
+
+	killUserSessionCmd(p.cmd)
+
+	select {
+	case <-p.exited:
+	case <-time.After(grace):
+	}
+	p.dead = true
+}
+
+// alarmRespawnBackoff es la espera antes del reintento número `fails`.
+//
+// Crece al doble y se acota. El clamp se aplica ANTES del desplazamiento: con la
+// alarma eterna `fails` no tiene techo, y `base << 40` no es una espera larga sino
+// un desbordamiento —una duración negativa que `time.After` dispara de inmediato,
+// devolviendo el bucle de spawn a toda velocidad que este backoff existe para
+// evitar.
+func alarmRespawnBackoff(fails int) time.Duration {
+	if fails <= 1 {
+		return alarmRespawnBaseBackoff
+	}
+
+	const maxShift = 6 // 1s << 6 = 64 s, ya por encima del techo
+	if fails-1 >= maxShift {
+		return alarmRespawnMaxBackoff
+	}
+
+	d := alarmRespawnBaseBackoff << (fails - 1)
+	if d > alarmRespawnMaxBackoff {
+		return alarmRespawnMaxBackoff
+	}
+	return d
+}
+
+// alarmGivesUp decide si hay que dejar de reintentar.
+//
+// La alarma ETERNA no se rinde nunca, y es a propósito: su caso de uso es un
+// equipo robado, así que preferimos reintentar cada 30 s indefinidamente antes que
+// quedarnos callados porque alguien mató el proceso unas cuantas veces. El costo es
+// un spawn cada medio minuto. La alarma con duración sí se rinde: su plazo la iba a
+// terminar igual, y reintentar sin tope ahí sólo esconde un equipo sin audio.
+func alarmGivesUp(forever bool, fails int) bool {
+	if forever {
+		return false
+	}
+	return fails > alarmRespawnMaxConsecutive
+}
 
 // ShowAlert muestra un mensaje al usuario del equipo dentro de su sesión
 // gráfica. Devuelve error si no hay nadie con sesión abierta: es información
@@ -177,6 +320,10 @@ func (a *Agent) LockScreen() error {
 // controla este lado y no el script que suena: el comando por SO reproduce en
 // bucle indefinidamente y acá lo matamos al vencer el plazo. Así un bucle que
 // se cuelgue igual muere, y `StopAlarm` puede cortarlo antes.
+//
+// El reproductor además queda VIGILADO: si muere sin que nadie lo haya pedido, se
+// relanza. Sin eso, matar un proceso —uno solo, en Windows— dejaba el equipo mudo
+// con el volumen clavado al máximo y la consola creyendo que la alarma sonaba.
 func (a *Agent) PlayAlarm(opts AlarmOptions) error {
 	return a.playAlarmWithSavedVolume(opts, volumeState{})
 }
@@ -206,13 +353,8 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd, err := a.alarmLoopCmd(ctx)
+	player, err := alarmSpawner(a, ctx)
 	if err != nil {
-		cancel()
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
 		cancel()
 		return err
 	}
@@ -278,6 +420,12 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 			reassertC = ticker.C
 		}
 
+		// fails cuenta fallos CONSECUTIVOS, no totales: un reproductor que alcanzó a
+		// vivir alarmRespawnMinUptime lo devuelve a cero. Así "alguien lo mata cada
+		// tanto" no termina agotando los reintentos, que es lo que pasaría con un
+		// contador acumulado en una alarma larga.
+		fails := 0
+
 	loop:
 		for {
 			select {
@@ -291,6 +439,27 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 				if err := a.setVolume(maxVolumeState); err != nil {
 					a.Logger.Debugln("PlayAlarm: no se pudo reafirmar el volumen máximo:", err)
 				}
+			case <-player.exited:
+				// El reproductor murió y nadie lo pidió. Se avisa en Error y no en
+				// Debug: en un equipo que se está buscando, "dejó de sonar sin que
+				// nadie lo detuviera" es justo lo que hay que poder leer después.
+				player.dead = true
+
+				if time.Since(player.startedAt) < alarmRespawnMinUptime {
+					fails++
+				} else {
+					fails = 0
+				}
+
+				a.Logger.Errorln("PlayAlarm: el reproductor murió sin que se lo pidiera",
+					"(vivió", time.Since(player.startedAt).Round(time.Millisecond),
+					", fallos seguidos:", fails, ") — relanzando")
+
+				next, ok := a.respawnAlarmPlayer(ctx, opts, stop, timerC, &fails)
+				if !ok {
+					break loop
+				}
+				player = next
 			}
 		}
 
@@ -307,15 +476,57 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 		//  3. Devolver el volumen DESPUÉS de que el sonido murió, para que el
 		//     último `afplay` en vuelo no alcance a sonar al máximo.
 		//  4. Recién entonces el archivo de estado deja de hacer falta.
-		a.finishAlarm(myEpoch, cmd, cancel, opts, saved)
+		a.finishAlarm(myEpoch, player, cancel, opts, saved)
 	}()
 
 	return nil
 }
 
+// respawnAlarmPlayer espera y vuelve a lanzar el reproductor. Devuelve false
+// cuando hay que terminar la alarma: porque se rindió, porque la detuvieron o
+// porque venció el plazo mientras esperaba.
+//
+// El reintento es un bucle propio y no una vuelta del `select` de arriba por un
+// detalle que importa: si el arranque falla, el canal `exited` del reproductor
+// muerto ya se consumió y volver al `select` dejaría esa rama esperando un valor
+// que nadie va a mandar. Una alarma eterna se quedaría colgada ahí, en silencio.
+func (a *Agent) respawnAlarmPlayer(ctx context.Context, opts AlarmOptions,
+	stop <-chan struct{}, timerC <-chan time.Time, fails *int) (*alarmPlayer, bool) {
+
+	for {
+		if alarmGivesUp(opts.Forever, *fails) {
+			a.Logger.Errorln("PlayAlarm: se agotaron los reintentos tras", *fails,
+				"fallos seguidos; la alarma se termina y se devuelve el volumen")
+			return nil, false
+		}
+
+		// La espera es interrumpible. Con un `time.Sleep`, un `stopalarm` que llegara
+		// en medio del backoff se quedaría esperando hasta 30 s y StopAlarm
+		// reportaría que la alarma no confirmó su término.
+		select {
+		case <-stop:
+			a.Logger.Debugln("PlayAlarm: detenida mientras esperaba para relanzar")
+			return nil, false
+		case <-timerC:
+			a.Logger.Debugln("PlayAlarm: se cumplió la duración mientras esperaba para relanzar")
+			return nil, false
+		case <-time.After(alarmRespawnBackoff(*fails)):
+		}
+
+		next, err := alarmSpawner(a, ctx)
+		if err == nil {
+			a.Logger.Infoln("PlayAlarm: reproductor relanzado")
+			return next, true
+		}
+
+		*fails++
+		a.Logger.Errorln("PlayAlarm: no se pudo relanzar el reproductor:", err.Error())
+	}
+}
+
 // finishAlarm es el teardown de la alarma. Vive aparte para que el orden de los
 // pasos sea legible de corrido y no quede sepultado en el `select`.
-func (a *Agent) finishAlarm(epoch uint64, cmd *exec.Cmd, cancel context.CancelFunc,
+func (a *Agent) finishAlarm(epoch uint64, player *alarmPlayer, cancel context.CancelFunc,
 	opts AlarmOptions, saved volumeState) {
 
 	// (1) Desarmar la resurrección. Sólo si esta alarma sigue siendo la vigente:
@@ -332,11 +543,13 @@ func (a *Agent) finishAlarm(epoch uint64, cmd *exec.Cmd, cancel context.CancelFu
 		runningAlarm.mu.Unlock()
 	}
 
-	// (2) Matar el árbol, después cancelar, después cosechar el proceso. Sin el
-	// Wait cada alarma dejaría un zombi.
-	killUserSessionCmd(cmd)
+	// (2) Matar el árbol con el padre TODAVÍA VIVO y sólo después cancelar el
+	// contexto. La cosecha va incluida en `stop`: el `Wait` ya corre en su propia
+	// goroutine desde que el reproductor arrancó, así que acá no hay que llamarlo
+	// de nuevo —hacerlo dos veces sobre el mismo `cmd` devuelve error y no cosecha
+	// nada.
+	player.stop(alarmStopGrace)
 	cancel()
-	_ = cmd.Wait()
 
 	// (3) y (4).
 	runningAlarm.mu.Lock()

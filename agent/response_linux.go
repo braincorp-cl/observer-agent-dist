@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -21,18 +22,97 @@ import (
 // El texto del operador NUNCA se interpola en una cadena: se pasa como argumento
 // del proceso (`argv`), en la posición marcada por `%TITLE%` y `%BODY%`. No hay
 // shell en el medio, así que no hay comillas que escapar ni inyección posible.
-var alertDialogs = []struct {
+//
+// Lo que sí hay que escapar es otra cosa, y no es seguridad sino fidelidad: casi
+// todas estas herramientas INTERPRETAN el cuerpo del mensaje. `escapeBody` lo
+// protege para que la persona lea exactamente lo que el operador escribió.
+type alertDialog struct {
 	bin  string
 	args []string // "%TITLE%" y "%BODY%" se sustituyen por los valores reales
-}{
+	// escapeBody protege el cuerpo del parser de la herramienta. Es distinto por
+	// herramienta porque cada una interpreta cosas distintas; nil = lo muestra crudo.
+	//
+	// Sólo se aplica al CUERPO. El título de zenity y de kdialog es el título de la
+	// ventana y no pasa por ningún parser: escaparlo mostraría un `&lt;` literal en
+	// la barra.
+	escapeBody func(string) string
+}
+
+var alertDialogs = []alertDialog{
 	// zenity (GTK/GNOME) y kdialog (KDE) son diálogos modales: se ven de verdad.
-	{"zenity", []string{"--info", "--title", "%TITLE%", "--text", "%BODY%"}},
-	{"kdialog", []string{"--title", "%TITLE%", "--msgbox", "%BODY%"}},
+	{"zenity", []string{"--info", "--title", "%TITLE%", "--text", "%BODY%"}, escapeZenityText},
+	{"kdialog", []string{"--title", "%TITLE%", "--msgbox", "%BODY%"}, escapeMarkupEntities},
 	// notify-send es una notificación, no un diálogo: menos intrusiva y más fácil
 	// de ignorar. Va después a propósito, como red de seguridad.
-	{"notify-send", []string{"--urgency=critical", "%TITLE%", "%BODY%"}},
-	// xmessage es feo pero está en cualquier instalación con X11.
-	{"xmessage", []string{"-center", "-title", "%TITLE%", "%BODY%"}},
+	{"notify-send", []string{"--urgency=critical", "%TITLE%", "%BODY%"}, escapeMarkupEntities},
+	// xmessage es feo pero está en cualquier instalación con X11. Es el único que
+	// muestra el texto crudo: no parsea nada, así que escaparlo sería empeorarlo.
+	{"xmessage", []string{"-center", "-title", "%TITLE%", "%BODY%"}, nil},
+}
+
+// escapeMarkupEntities protege el texto de un parser de marcas: Pango en zenity,
+// rich text de Qt en kdialog (KMessageBox lo autodetecta), y el subconjunto de
+// markup que los demonios de notificación aplican al cuerpo.
+//
+// Sin esto, un mensaje en texto libre del operador —"a < b", "<urgente>", "Ventas &
+// Cobranzas"— sale mutilado, y si el markup queda inválido el diálogo puede salir
+// VACÍO. Es la mentira más barata de esta feature: el diálogo aparece, el agente
+// responde `ok`, y lo que la persona leyó no es lo que se envió.
+//
+// El `&` va primero. Al revés, los `&` que introducen las otras dos sustituciones se
+// volverían a escapar y la pantalla mostraría `&amp;lt;`.
+func escapeMarkupEntities(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+// escapeZenityText suma la otra mitad del destrozo, que es exclusiva de zenity y no
+// tiene nada que ver con los signos de mayor y menor.
+//
+// Verificado en su fuente (`src/msg.c`): cuando el markup está activo —que es por
+// omisión— zenity llama `gtk_label_set_markup(g_strcompress(texto))`. O sea que
+// ANTES de parsear las marcas le pasa el texto por `g_strcompress`, que convierte
+// las secuencias con barra invertida en el carácter que representan. Sin duplicar la
+// barra, un mensaje que mencione `C:\temp\nueva` pierde la ruta: `\t` se vuelve un
+// tabulador y `\n` un salto de línea. La flota es mixta y los mensajes del operador
+// nombran rutas de Windows, así que el caso no es hipotético.
+//
+// La barra se duplica ANTES de las entidades: al revés no habría interacción igual
+// —ninguna entidad contiene barras— pero así el orden refleja el de zenity, que
+// descomprime primero y parsea después.
+func escapeZenityText(s string) string {
+	return escapeMarkupEntities(strings.ReplaceAll(s, `\`, `\\`))
+}
+
+// buildAlertArgs sustituye los marcadores por los valores reales y escapa el cuerpo
+// según la herramienta.
+//
+// Vive aparte de showAlert por una razón concreta y aprendida: probar las funciones
+// de escapado NO prueba que alguien las llame. La primera versión de estas pruebas
+// pasaba en verde con el escapado desconectado del bucle —el mismo hueco que tenía
+// el gate `lint:i18n`, que recorría un archivo sin aplicarle las reglas—. Con el
+// armado acá, la prueba mira los argumentos que de verdad se le pasan al proceso.
+func buildAlertArgs(d alertDialog, title, message string) []string {
+	body := message
+	if d.escapeBody != nil {
+		body = d.escapeBody(message)
+	}
+
+	args := make([]string, len(d.args))
+	for i, arg := range d.args {
+		switch arg {
+		case "%TITLE%":
+			args[i] = title
+		case "%BODY%":
+			args[i] = body
+		default:
+			args[i] = arg
+		}
+	}
+
+	return args
 }
 
 // alarmPlayers empareja reproductor con formato de sonido.
@@ -73,19 +153,7 @@ func (a *Agent) showAlert(title, message string) error {
 			continue
 		}
 
-		args := make([]string, len(d.args))
-		for i, arg := range d.args {
-			switch arg {
-			case "%TITLE%":
-				args[i] = title
-			case "%BODY%":
-				args[i] = message
-			default:
-				args[i] = arg
-			}
-		}
-
-		cmd := a.newSessionCmdFor(ctx, sess, bin, args...)
+		cmd := a.newSessionCmdFor(ctx, sess, bin, buildAlertArgs(d, title, message)...)
 
 		// No se espera el cierre del diálogo (ver el equivalente en macOS): el
 		// operador necesita saber que se entregó, no que se leyó. El contexto lo

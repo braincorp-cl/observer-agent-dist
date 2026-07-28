@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/fourcorelabs/wintoken"
 	"golang.org/x/sys/windows"
 )
 
@@ -66,14 +65,11 @@ const (
 // activeUserSession devuelve el ID de la sesión interactiva activa y el usuario
 // que la tiene abierta.
 //
-// Se recorren todas las sesiones en vez de usar WTSGetActiveConsoleSessionId
-// para cubrir también RDP: en un servidor el usuario puede estar conectado
-// remotamente y esa es igualmente su sesión.
-//
-// Se exige nombre de usuario no vacío. Una sesión puede estar WTSActive
-// mostrando la pantalla de inicio de sesión, sin nadie dentro; mandarle un
-// mensaje o bloquearla no tendría sentido y devolver "ok" al operador sería
-// mentirle.
+// Acá vive sólo la consulta a la API; la regla de elección está en
+// `pickUserSession` (usersession.go), fuera de la etiqueta de plataforma para que se
+// pueda probar en la CI. Se recorren todas las sesiones en vez de usar únicamente
+// WTSGetActiveConsoleSessionId para cubrir también RDP: en un servidor el usuario
+// puede estar conectado remotamente y esa es igualmente su sesión.
 func activeUserSession() (uint32, string, error) {
 	var (
 		sessions     *windows.WTS_SESSION_INFO
@@ -90,18 +86,27 @@ func activeUserSession() (uint32, string, error) {
 	// unsafe.Slice sobre el puntero tipado en vez de aritmética con uintptr: el
 	// resultado es el mismo recorrido pero sin la conversión uintptr→Pointer que
 	// `go vet` marca como uso dudoso (y con razón: el GC no ve esa aritmética).
+	candidatas := make([]wtsSession, 0, sessionCount)
 	for _, s := range unsafe.Slice(sessions, sessionCount) {
-		if s.State != windows.WTSActive {
-			continue
+		c := wtsSession{ID: s.SessionID, Active: s.State == windows.WTSActive}
+
+		// El nombre se consulta sólo para las activas: es una llamada más a la API y
+		// las demás se descartan igual.
+		if c.Active {
+			if user, err := wtsSessionUserName(s.SessionID); err == nil {
+				c.User = user
+			}
 		}
-		user, err := wtsSessionUserName(s.SessionID)
-		if err != nil || user == "" {
-			continue
-		}
-		return s.SessionID, user, nil
+
+		candidatas = append(candidatas, c)
 	}
 
-	return 0, "", errNoUserSession
+	id, user, ok := pickUserSession(candidatas, windows.WTSGetActiveConsoleSessionId())
+	if !ok {
+		return 0, "", errNoUserSession
+	}
+
+	return id, user, nil
 }
 
 // wtsSessionUserName consulta el usuario dueño de una sesión.
@@ -164,28 +169,64 @@ func wtsSendMessage(sessionID uint32, title, message string) error {
 	return nil
 }
 
+// interactiveUserToken devuelve un token PRIMARIO del usuario dueño de la sesión
+// indicada.
+//
+// Se pide primario y no de impersonación: cuando `SysProcAttr.Token` está definido,
+// Go usa CreateProcessAsUser, que documentadamente requiere un token primario. (El
+// camino `runasuser` heredado del upstream, en agent_windows.go, pide uno de
+// impersonación; no se toca acá para no cambiar comportamiento probado ajeno a esta
+// feature.)
+//
+// ⚠️ Esto reemplaza a `wintoken.GetInteractiveToken`, y el motivo es una
+// inconsistencia real. Esa función elige **la primera sesión WTSActive, sin mirar si
+// hay alguien adentro** (`gettoken.go`, v1.0.0), mientras `activeUserSession` exige
+// además nombre de usuario no vacío. En un equipo con la consola en la pantalla de
+// inicio de sesión —que es WTSActive y no tiene usuario— y la persona conectada por
+// RDP, las dos elegían sesiones distintas: el `alert` llegaba bien porque
+// WTSSendMessageW usa el ID que resolvimos nosotros, y `lock` y `alarm` contestaban
+// `no_user_session` porque el token se pedía para la sesión vacía. Tres acciones y
+// dos respuestas distintas sobre el mismo equipo con un usuario dentro.
+//
+// Pasando el sessionID explícito, las tres acciones hablan siempre de la misma
+// sesión.
+func interactiveUserToken(sessionID uint32) (windows.Token, error) {
+	var userToken windows.Token
+	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
+		return 0, err
+	}
+	// El token que entrega WTSQueryUserToken es primario pero no se puede heredar
+	// tal cual: se duplica con los permisos que CreateProcessAsUser necesita y el
+	// original se cierra acá mismo.
+	defer userToken.Close()
+
+	var primary windows.Token
+	if err := windows.DuplicateTokenEx(userToken, windows.MAXIMUM_ALLOWED, nil,
+		windows.SecurityDelegation, windows.TokenPrimary, &primary); err != nil {
+		return 0, err
+	}
+
+	return primary, nil
+}
+
 // newUserSessionCmd prepara un comando para ejecutarse en la sesión del usuario
 // interactivo, con su token y su entorno.
-//
-// Se pide TokenPrimary y no TokenImpersonation: cuando `SysProcAttr.Token` está
-// definido, Go usa CreateProcessAsUser, que documentadamente requiere un token
-// primario. (El camino `runasuser` heredado del upstream pide un token de
-// impersonación; no lo toco acá para no cambiar comportamiento probado ajeno a
-// esta feature, pero el código nuevo usa el tipo correcto.)
 func (a *Agent) newUserSessionCmd(ctx context.Context, exe string, args ...string) (*exec.Cmd, error) {
-	if _, _, err := activeUserSession(); err != nil {
+	sessionID, user, err := activeUserSession()
+	if err != nil {
 		return nil, err
 	}
 
-	token, err := wintoken.GetInteractiveToken(wintoken.TokenPrimary)
+	token, err := interactiveUserToken(sessionID)
 	if err != nil {
-		a.Logger.Debugln("newUserSessionCmd: no se pudo obtener el token interactivo:", err)
+		a.Logger.Debugln("newUserSessionCmd: no se pudo obtener el token de la sesión",
+			sessionID, "de", user, ":", err)
 		return nil, errNoUserSession
 	}
 
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Token: syscall.Token(token.Token()),
+		Token: syscall.Token(token),
 		// CREATE_NO_WINDOW evita el destello de una consola en el escritorio del
 		// usuario. No afecta al audio ni a la llamada a LockWorkStation.
 		CreationFlags: windows.CREATE_NO_WINDOW,
@@ -193,7 +234,7 @@ func (a *Agent) newUserSessionCmd(ctx context.Context, exe string, args ...strin
 
 	// Entorno del usuario, no el del servicio. Sin esto el hijo heredaría
 	// USERPROFILE/APPDATA de SYSTEM, que apuntan a otro perfil.
-	if envBlock, err := CreateEnvironmentBlock(syscall.Token(token.Token())); err == nil {
+	if envBlock, err := CreateEnvironmentBlock(syscall.Token(token)); err == nil {
 		cmd.Env = EnvironmentBlockToSlice(envBlock)
 		DestroyEnvironmentBlock(envBlock)
 	}
@@ -203,7 +244,7 @@ func (a *Agent) newUserSessionCmd(ctx context.Context, exe string, args ...strin
 	// handle que quedó en SysProcAttr.
 	go func() {
 		<-ctx.Done()
-		token.Close()
+		_ = token.Close()
 	}()
 
 	return cmd, nil
