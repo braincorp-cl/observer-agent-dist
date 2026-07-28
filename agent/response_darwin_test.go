@@ -194,7 +194,7 @@ func TestDetenerAlarmaNoDejaBucleHuerfano(t *testing.T) {
 	for v := 1; v <= vueltas; v++ {
 		// Duración larga a propósito: si el stop no funcionara, no quiero que lo
 		// tape el vencimiento del plazo. Con el bug esto sonaba los 120 s enteros.
-		if err := a.PlayAlarm(120); err != nil {
+		if err := a.PlayAlarm(AlarmOptions{Seconds: 120}); err != nil {
 			t.Fatalf("vuelta %d: PlayAlarm falló: %v", v, err)
 		}
 

@@ -61,6 +61,14 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		}
 	}
 
+	// Feature 028 Fase 2. Va acá, antes del sleep de arranque, y después de
+	// createWinTempDir porque en Windows el archivo de estado vive en ese mismo
+	// directorio. Dos cosas pueden estar pendientes de la ejecución anterior:
+	// una alarma eterna que debe volver a sonar, y un volumen subido que hay que
+	// devolver. La segunda importa incluso cuando la primera no aplica — si el
+	// agente murió a mitad de alarma, el equipo quedó al máximo.
+	a.ResumeAlarm()
+
 	// Sync temprano del mesh node id justo tras instalar, para que el server
 	// conozca la conectividad Mesh sin esperar al primer tick (backport v2.11.0
 	// "get meshid after install"). Solo unix; en Windows el install de Mesh es

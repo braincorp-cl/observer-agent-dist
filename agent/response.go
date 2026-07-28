@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +34,16 @@ import (
 const (
 	// alarmDefaultSeconds es lo que dura la alarma si el servidor no especifica.
 	alarmDefaultSeconds = 30
-	// alarmMaxSeconds es un tope duro. La alarma es una herramienta para
-	// encontrar físicamente un equipo, no para castigar a quien lo tenga: sin
-	// tope, un comando mal enviado deja un equipo sonando indefinidamente y la
-	// única salida sería apagarlo.
+	// alarmMaxSeconds es el tope del camino normal. La alarma es una herramienta
+	// para encontrar físicamente un equipo, no para castigar a quien lo tenga:
+	// sin tope, un comando mal enviado deja un equipo sonando indefinidamente y
+	// la única salida sería apagarlo.
+	//
+	// La Fase 2 agrega la ALARMA ETERNA, que cruza esa línea a conciencia y por
+	// eso NO se codifica aflojando este tope: es un flag propio
+	// (`AlarmOptions.Forever`) que saltea el clamp entero. Así el camino normal
+	// sigue acotado y la excepción se ve en el payload, en la auditoría y en la
+	// confirmación de la consola.
 	alarmMaxSeconds = 300
 
 	// alarmStopGrace es lo que StopAlarm espera a que la goroutine confirme que ya
@@ -163,19 +170,35 @@ func (a *Agent) LockScreen() error {
 	return a.lockScreen()
 }
 
-// PlayAlarm hace sonar una alarma en el equipo durante `seconds`. Sirve para
-// encontrar físicamente una máquina (el caso antirrobo de Prey).
+// PlayAlarm hace sonar una alarma en el equipo. Sirve para encontrar
+// físicamente una máquina (el caso antirrobo de Prey).
 //
 // El sonido es el propio del SO; el agente no empaqueta audio. La duración la
 // controla este lado y no el script que suena: el comando por SO reproduce en
 // bucle indefinidamente y acá lo matamos al vencer el plazo. Así un bucle que
 // se cuelgue igual muere, y `StopAlarm` puede cortarlo antes.
-func (a *Agent) PlayAlarm(seconds int) error {
-	if seconds <= 0 {
-		seconds = alarmDefaultSeconds
-	}
-	if seconds > alarmMaxSeconds {
-		seconds = alarmMaxSeconds
+func (a *Agent) PlayAlarm(opts AlarmOptions) error {
+	return a.playAlarmWithSavedVolume(opts, volumeState{})
+}
+
+// playAlarmWithSavedVolume es PlayAlarm con un estado de volumen ya conocido.
+//
+// `resumed` sólo trae valor cuando se rearma una alarma eterna tras un reinicio
+// (ver ResumeAlarm). En ese caso NO se vuelve a leer el volumen del sistema: el
+// equipo sigue al máximo desde antes del reinicio —Windows y macOS conservan el
+// volumen del dispositivo— y una lectura nueva guardaría ese 100 % como si fuera
+// la preferencia del usuario, perdiendo el valor real para siempre.
+func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState) error {
+	// El tope 5-300 s se conserva como el camino normal. La alarma eterna es la
+	// excepción explícita para el caso de robo, y por eso saltea el clamp en vez
+	// de codificarse como un valor especial de `Seconds`.
+	if !opts.Forever {
+		if opts.Seconds <= 0 {
+			opts.Seconds = alarmDefaultSeconds
+		}
+		if opts.Seconds > alarmMaxSeconds {
+			opts.Seconds = alarmMaxSeconds
+		}
 	}
 
 	// Cualquier alarma anterior se detiene antes de arrancar la nueva.
@@ -194,6 +217,24 @@ func (a *Agent) PlayAlarm(seconds int) error {
 		return err
 	}
 
+	// El volumen se toca DESPUÉS de que el proceso de sonido arrancó: si no
+	// arrancó no hay nada que subirle el volumen a, y subirlo igual dejaría un
+	// equipo al máximo y en silencio.
+	//
+	// Que no se pueda controlar el volumen NO cancela la alarma: suena al volumen
+	// que tenga el usuario, que es el comportamiento previo a esta fase. Un
+	// equipo que se está buscando debe sonar aunque el mezclador no coopere.
+	saved := resumed
+	if opts.MaxVolume {
+		if saved.Known {
+			if err := a.setVolume(maxVolumeState); err != nil {
+				a.Logger.Debugln("PlayAlarm: no se pudo reafirmar el volumen máximo al rearmar:", err)
+			}
+		} else {
+			saved = a.raiseVolumeForAlarm()
+		}
+	}
+
 	stop := make(chan struct{})
 	done := make(chan struct{})
 
@@ -202,41 +243,116 @@ func (a *Agent) PlayAlarm(seconds int) error {
 	myEpoch := runningAlarm.epoch
 	runningAlarm.stop = stop
 	runningAlarm.done = done
+	// Se persiste bajo el mismo mutex que la época, para que la goroutine de una
+	// alarma que agotó su gracia de 3 s no pise el archivo de la que ya la
+	// reemplazó.
+	if opts.Forever || saved.Known {
+		a.saveAlarmState(persistedAlarm{
+			Forever:   opts.Forever,
+			MaxVolume: opts.MaxVolume,
+			Volume:    saved,
+		})
+	}
 	runningAlarm.mu.Unlock()
 
 	go func() {
 		defer close(done)
 
-		timer := time.NewTimer(time.Duration(seconds) * time.Second)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			a.Logger.Debugln("PlayAlarm: se cumplió la duración, deteniendo")
-		case <-stop:
-			a.Logger.Debugln("PlayAlarm: detenida antes de tiempo")
+		// Sin duración no hay temporizador: un canal nil en un `select` bloquea
+		// para siempre, que es exactamente lo que "eterna" significa acá.
+		var timerC <-chan time.Time
+		if !opts.Forever {
+			timer := time.NewTimer(time.Duration(opts.Seconds) * time.Second)
+			defer timer.Stop()
+			timerC = timer.C
 		}
 
-		// El orden es lo que arregla el bug: matar el árbol con el padre TODAVÍA
-		// VIVO, y sólo después cancelar el contexto. Al revés, el vigilante de
-		// `CommandContext` mata al padre primero y el bucle de sonido sobrevive
-		// huérfano. Los dos caminos —duración y detención— pasan por acá, así que
-		// no hay uno bueno y uno malo como antes.
-		killUserSessionCmd(cmd)
-		cancel()
-
-		// Cosechar el proceso. Sin este Wait cada alarma dejaría un zombi.
-		_ = cmd.Wait()
-
-		runningAlarm.mu.Lock()
-		if runningAlarm.epoch == myEpoch {
-			runningAlarm.stop = nil
-			runningAlarm.done = nil
+		// Reafirmación del volumen: si la persona lo baja o silencia el equipo, se
+		// le vuelve a subir. Sin esto, bajar el volumen desactiva la alarma sin
+		// permiso. Mismo comportamiento que Prey, con la diferencia de que
+		// nosotros sí devolvemos el valor previo al terminar.
+		var reassertC <-chan time.Time
+		if opts.MaxVolume && saved.Known {
+			ticker := time.NewTicker(volumeReassertInterval)
+			defer ticker.Stop()
+			reassertC = ticker.C
 		}
-		runningAlarm.mu.Unlock()
+
+	loop:
+		for {
+			select {
+			case <-timerC:
+				a.Logger.Debugln("PlayAlarm: se cumplió la duración, deteniendo")
+				break loop
+			case <-stop:
+				a.Logger.Debugln("PlayAlarm: detenida antes de tiempo")
+				break loop
+			case <-reassertC:
+				if err := a.setVolume(maxVolumeState); err != nil {
+					a.Logger.Debugln("PlayAlarm: no se pudo reafirmar el volumen máximo:", err)
+				}
+			}
+		}
+
+		// Teardown. El orden de los cuatro pasos está elegido para que cualquier
+		// corte a mitad deje el equipo en el estado menos malo posible:
+		//
+		//  1. Desarmar la resurrección ANTES de matar nada, conservando el volumen
+		//     pendiente. Si el equipo se cae acá, al arrancar no vuelve a sonar
+		//     pero sí recupera el volumen.
+		//  2. Matar el árbol con el padre TODAVÍA VIVO y sólo después cancelar el
+		//     contexto — el arreglo de `e192d3c`. Al revés, el vigilante de
+		//     `CommandContext` mata al padre primero y el bucle de sonido sobrevive
+		//     huérfano.
+		//  3. Devolver el volumen DESPUÉS de que el sonido murió, para que el
+		//     último `afplay` en vuelo no alcance a sonar al máximo.
+		//  4. Recién entonces el archivo de estado deja de hacer falta.
+		a.finishAlarm(myEpoch, cmd, cancel, opts, saved)
 	}()
 
 	return nil
+}
+
+// finishAlarm es el teardown de la alarma. Vive aparte para que el orden de los
+// pasos sea legible de corrido y no quede sepultado en el `select`.
+func (a *Agent) finishAlarm(epoch uint64, cmd *exec.Cmd, cancel context.CancelFunc,
+	opts AlarmOptions, saved volumeState) {
+
+	// (1) Desarmar la resurrección. Sólo si esta alarma sigue siendo la vigente:
+	// si otra la reemplazó, el archivo ya es de ella.
+	if opts.Forever {
+		runningAlarm.mu.Lock()
+		if runningAlarm.epoch == epoch {
+			a.saveAlarmState(persistedAlarm{
+				Forever:   false,
+				MaxVolume: opts.MaxVolume,
+				Volume:    saved,
+			})
+		}
+		runningAlarm.mu.Unlock()
+	}
+
+	// (2) Matar el árbol, después cancelar, después cosechar el proceso. Sin el
+	// Wait cada alarma dejaría un zombi.
+	killUserSessionCmd(cmd)
+	cancel()
+	_ = cmd.Wait()
+
+	// (3) y (4).
+	runningAlarm.mu.Lock()
+	current := runningAlarm.epoch == epoch
+	if current {
+		runningAlarm.stop = nil
+		runningAlarm.done = nil
+	}
+	runningAlarm.mu.Unlock()
+
+	if !current {
+		return
+	}
+
+	a.restoreSavedVolume(saved)
+	a.clearAlarmState()
 }
 
 // StopAlarm detiene la alarma en curso, si hay una. Es idempotente: llamarla sin
@@ -260,6 +376,21 @@ func (a *Agent) StopAlarm() {
 	case <-time.After(alarmStopGrace):
 		a.Logger.Debugln("StopAlarm: la alarma no confirmó su término en", alarmStopGrace)
 	}
+}
+
+// natsBoolFlag lee una bandera del payload NATS, que viaja como texto porque
+// `NatsMsg.Data` es `map[string]string` (igual que `duration`).
+//
+// Falla cerrado a propósito: cualquier valor que no sea un "verdadero"
+// reconocible se lee como falso. Las dos banderas de la Fase 2 —sonido máximo y
+// alarma eterna— son las más peligrosas de la feature, y un payload que no se
+// entiende no debe activarlas.
+func natsBoolFlag(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // truncate recorta respetando runes, para no partir un carácter multibyte por la

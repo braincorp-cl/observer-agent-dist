@@ -691,8 +691,23 @@ func (a *Agent) RunRPC() {
 				// La duración viaja como texto en el payload; si no viene o no se
 				// puede leer, PlayAlarm aplica su propio valor por defecto y su tope.
 				seconds, _ := strconv.Atoi(p.Data["duration"])
-				a.Logger.Debugln("Haciendo sonar la alarma por", seconds, "segundos")
-				err := a.PlayAlarm(seconds)
+
+				// Feature 028 Fase 2: las dos banderas antirrobo. Van como campos
+				// propios y no como valores especiales de `duration` — un
+				// `duration=0` significaría "usa el default de 30 s", no "eterna".
+				opts := AlarmOptions{
+					Seconds:   seconds,
+					Forever:   natsBoolFlag(p.Data["forever"]),
+					MaxVolume: natsBoolFlag(p.Data["max_volume"]),
+				}
+
+				if opts.Forever {
+					a.Logger.Debugln("Haciendo sonar la alarma SIN LÍMITE DE TIEMPO, sonido máximo:", opts.MaxVolume)
+				} else {
+					a.Logger.Debugln("Haciendo sonar la alarma por", opts.Seconds, "segundos, sonido máximo:", opts.MaxVolume)
+				}
+
+				err := a.PlayAlarm(opts)
 				if err != nil {
 					a.Logger.Errorln("PlayAlarm:", err.Error())
 				}
