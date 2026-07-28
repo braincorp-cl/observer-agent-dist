@@ -75,6 +75,10 @@ type persistedAlarm struct {
 	MaxVolume bool `json:"max_volume"`
 	// Volume: el estado previo, pendiente de restaurar.
 	Volume volumeState `json:"volume"`
+	// Output: la salida de audio previa, pendiente de restaurar. Se persiste por
+	// el mismo motivo que el volumen: si el equipo se reinicia con la alarma
+	// eterna sonando, nadie más sabe a qué dispositivo había que volver.
+	Output audioOutput `json:"output"`
 }
 
 // alarmDataDir es el directorio de los archivos de la alarma: el estado y la sirena
@@ -182,18 +186,20 @@ func (a *Agent) ResumeAlarm() {
 		if err := a.playAlarmWithSavedVolume(AlarmOptions{
 			Forever:   true,
 			MaxVolume: st.MaxVolume,
-		}, st.Volume); err != nil {
+		}, st.Volume, st.Output); err != nil {
 			a.Logger.Errorln("ResumeAlarm:", err.Error())
 			// La alarma no arrancó, pero el volumen guardado sigue siendo válido
 			// y hay que devolverlo: si no, el equipo queda al máximo y en
 			// silencio, que es el peor de los dos mundos.
 			a.restoreSavedVolume(st.Volume)
+			a.restoreAudioOutput(st.Output)
 			a.clearAlarmState()
 		}
 		return
 	}
 
-	a.Logger.Infoln("ResumeAlarm: restaurando el volumen que dejó una alarma interrumpida")
+	a.Logger.Infoln("ResumeAlarm: restaurando el volumen y la salida que dejó una alarma interrumpida")
 	a.restoreSavedVolume(st.Volume)
+	a.restoreAudioOutput(st.Output)
 	a.clearAlarmState()
 }

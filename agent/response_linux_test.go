@@ -127,18 +127,50 @@ func TestElTextoDeZenityLlegaIntactoAlUsuario(t *testing.T) {
 	}
 }
 
-func TestElTextoDeKdialogYNotifySendLlegaIntacto(t *testing.T) {
-	for _, bin := range []string{"kdialog", "notify-send"} {
-		d := dialogo(t, bin)
+// undoKdialog deshace, en orden inverso, todo lo que kdialog le hace al texto.
+//
+// ⚠️ Este modelo se MIDIÓ en `FAZOCAR` (LXQt) el 2026-07-28 con una captura de
+// pantalla por variante. La versión anterior de este test decía que kdialog
+// "parsea marcas pero NO descomprime barras invertidas", y eso era **falso**: es
+// justo lo que hacía que el usuario leyera la ruta partida en dos y las entidades
+// crudas. Cuando este modelo y la pantalla no coincidan, la que manda es la
+// pantalla.
+func undoKdialog(s string) string {
+	s = strings.TrimPrefix(s, "<html>")
+	s = strings.TrimSuffix(s, "</html>")
+	s = strings.ReplaceAll(s, "<br>", "\n")
+	s = undoEntities(s)
+	// Descomprime las barras igual que g_strcompress: medido, se queja por stderr
+	// ("Unrecognized escape sequence \\t") con el texto crudo.
+	return gStrcompress(s)
+}
 
-		for _, original := range mensajesQueRompen {
-			// Parsean marcas pero NO descomprimen barras invertidas.
-			visto := undoEntities(cuerpoEnviado(t, d, "Aviso", original))
+func TestElTextoDeKdialogLlegaIntacto(t *testing.T) {
+	d := dialogo(t, "kdialog")
 
-			if visto != original {
-				t.Errorf("%s: el usuario habría leído otra cosa:\n  enviado: %q\n    leído: %q",
-					bin, original, visto)
-			}
+	for _, original := range mensajesQueRompen {
+		visto := undoKdialog(cuerpoEnviado(t, d, "Aviso", original))
+
+		if visto != original {
+			t.Errorf("kdialog: el usuario habría leído otra cosa:\n  enviado: %q\n    leído: %q",
+				original, visto)
+		}
+	}
+}
+
+// notify-send conserva el modelo viejo —entidades sí, barras no— porque a
+// diferencia de kdialog **eso no está medido en ningún equipo**: el camino no se
+// ejercitó en campo. Queda escrito para que la próxima medición sepa qué está
+// asumiendo.
+func TestElTextoDeNotifySendLlegaIntacto(t *testing.T) {
+	d := dialogo(t, "notify-send")
+
+	for _, original := range mensajesQueRompen {
+		visto := undoEntities(cuerpoEnviado(t, d, "Aviso", original))
+
+		if visto != original {
+			t.Errorf("notify-send: el usuario habría leído otra cosa:\n  enviado: %q\n    leído: %q",
+				original, visto)
 		}
 	}
 }

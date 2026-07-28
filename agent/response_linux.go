@@ -41,7 +41,7 @@ type alertDialog struct {
 var alertDialogs = []alertDialog{
 	// zenity (GTK/GNOME) y kdialog (KDE) son diálogos modales: se ven de verdad.
 	{"zenity", []string{"--info", "--title", "%TITLE%", "--text", "%BODY%"}, escapeZenityText},
-	{"kdialog", []string{"--title", "%TITLE%", "--msgbox", "%BODY%"}, escapeMarkupEntities},
+	{"kdialog", []string{"--title", "%TITLE%", "--msgbox", "%BODY%"}, escapeKdialogText},
 	// notify-send es una notificación, no un diálogo: menos intrusiva y más fácil
 	// de ignorar. Va después a propósito, como red de seguridad.
 	{"notify-send", []string{"--urgency=critical", "%TITLE%", "%BODY%"}, escapeMarkupEntities},
@@ -84,6 +84,45 @@ func escapeMarkupEntities(s string) string {
 // descomprime primero y parsea después.
 func escapeZenityText(s string) string {
 	return escapeMarkupEntities(strings.ReplaceAll(s, `\`, `\\`))
+}
+
+// escapeKdialogText es la mitad kdialog del mismo problema, y NO es la de zenity
+// ni la de las entidades a secas. Se midió el 2026-07-28 en `FAZOCAR` (LXQt) con
+// cuatro variantes y una captura de pantalla de cada una, porque las dos veces que
+// esto se dedujo leyendo código ajeno se dedujo mal.
+//
+// Lo que hace kdialog, medido:
+//
+//  1. **Descomprime secuencias con barra invertida**, igual que zenity aunque por
+//     otro camino: manda `C:\temp\nueva` y la ruta se parte en dos líneas. Con el
+//     texto crudo llega a quejarse por stderr ("Unrecognized escape sequence \t").
+//  2. **Qt autodetecta rich text**, y ahí está la trampa que hizo fallar el arreglo
+//     anterior: su detector recorre el texto hasta el primer `<`, `&` o **salto de
+//     línea**, y si lo primero que encuentra es el salto, decide que NO es rich text.
+//     Entonces las entidades que habíamos escapado se muestran crudas: la persona lee
+//     `&lt;urgente&gt;`. Como la barra sin escapar INTRODUCE un salto de línea, el
+//     arreglo viejo se saboteaba a sí mismo.
+//  3. Si decide que sí es rich text, una etiqueta **de verdad** (`<b>`) se interpreta
+//     y desaparece del texto. Por eso no alcanza con escapar sólo la barra.
+//
+// De ahí las cuatro operaciones, en este orden:
+//
+//	barra -> entidades -> saltos reales a <br> -> envoltura <html>
+//
+// La envoltura no es decorativa: **fuerza** el modo rich text, que es lo único que
+// garantiza que las entidades se decodifiquen pase lo que pase con el resto del
+// texto. Y como en rich text un salto de línea real no se ve, hay que convertirlo.
+func escapeKdialogText(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = escapeMarkupEntities(s)
+
+	// Los saltos se normalizan antes de convertirlos: un CRLF tiene que dar UN
+	// solo <br>, no dos.
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\n", "<br>")
+
+	return "<html>" + s + "</html>"
 }
 
 // buildAlertArgs sustituye los marcadores por los valores reales y escapa el cuerpo

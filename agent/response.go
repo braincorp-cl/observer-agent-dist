@@ -325,7 +325,7 @@ func (a *Agent) LockScreen() error {
 // relanza. Sin eso, matar un proceso —uno solo, en Windows— dejaba el equipo mudo
 // con el volumen clavado al máximo y la consola creyendo que la alarma sonaba.
 func (a *Agent) PlayAlarm(opts AlarmOptions) error {
-	return a.playAlarmWithSavedVolume(opts, volumeState{})
+	return a.playAlarmWithSavedVolume(opts, volumeState{}, audioOutput{})
 }
 
 // playAlarmWithSavedVolume es PlayAlarm con un estado de volumen ya conocido.
@@ -335,7 +335,7 @@ func (a *Agent) PlayAlarm(opts AlarmOptions) error {
 // equipo sigue al máximo desde antes del reinicio —Windows y macOS conservan el
 // volumen del dispositivo— y una lectura nueva guardaría ese 100 % como si fuera
 // la preferencia del usuario, perdiendo el valor real para siempre.
-func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState) error {
+func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState, resumedOutput audioOutput) error {
 	// El tope 5-300 s se conserva como el camino normal. La alarma eterna es la
 	// excepción explícita para el caso de robo, y por eso saltea el clamp en vez
 	// de codificarse como un valor especial de `Seconds`.
@@ -353,8 +353,24 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// ⚠️ La salida se mueve ANTES de lanzar el reproductor, al revés que el
+	// volumen: un flujo de audio ya abierto se queda en el dispositivo con el que
+	// nació, así que cambiarla después movería los sonidos del sistema y dejaría
+	// la alarma sonando igual en los audífonos.
+	//
+	// El motivo está medido: la alarma sonó al 100 % en los AirPods del dueño del
+	// equipo. En audífonos el sonido máximo no ayuda a encontrar nada y sí puede
+	// lastimar a quien los lleva.
+	output := resumedOutput
+	if !output.Known {
+		output = a.switchOutputToInternalSpeakers()
+	}
+
 	player, err := alarmSpawner(a, ctx)
 	if err != nil {
+		// Si el reproductor no arrancó, la salida movida no le sirve a nadie: se
+		// devuelve acá mismo en vez de esperar a un teardown que no va a ocurrir.
+		a.restoreAudioOutput(output)
 		cancel()
 		return err
 	}
@@ -388,11 +404,12 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 	// Se persiste bajo el mismo mutex que la época, para que la goroutine de una
 	// alarma que agotó su gracia de 3 s no pise el archivo de la que ya la
 	// reemplazó.
-	if opts.Forever || saved.Known {
+	if opts.Forever || saved.Known || output.Known {
 		a.saveAlarmState(persistedAlarm{
 			Forever:   opts.Forever,
 			MaxVolume: opts.MaxVolume,
 			Volume:    saved,
+			Output:    output,
 		})
 	}
 	runningAlarm.mu.Unlock()
@@ -476,7 +493,7 @@ func (a *Agent) playAlarmWithSavedVolume(opts AlarmOptions, resumed volumeState)
 		//  3. Devolver el volumen DESPUÉS de que el sonido murió, para que el
 		//     último `afplay` en vuelo no alcance a sonar al máximo.
 		//  4. Recién entonces el archivo de estado deja de hacer falta.
-		a.finishAlarm(myEpoch, player, cancel, opts, saved)
+		a.finishAlarm(myEpoch, player, cancel, opts, saved, output)
 	}()
 
 	return nil
@@ -527,7 +544,7 @@ func (a *Agent) respawnAlarmPlayer(ctx context.Context, opts AlarmOptions,
 // finishAlarm es el teardown de la alarma. Vive aparte para que el orden de los
 // pasos sea legible de corrido y no quede sepultado en el `select`.
 func (a *Agent) finishAlarm(epoch uint64, player *alarmPlayer, cancel context.CancelFunc,
-	opts AlarmOptions, saved volumeState) {
+	opts AlarmOptions, saved volumeState, output audioOutput) {
 
 	// (1) Desarmar la resurrección. Sólo si esta alarma sigue siendo la vigente:
 	// si otra la reemplazó, el archivo ya es de ella.
@@ -565,6 +582,7 @@ func (a *Agent) finishAlarm(epoch uint64, player *alarmPlayer, cancel context.Ca
 	}
 
 	a.restoreSavedVolume(saved)
+	a.restoreAudioOutput(output)
 	a.clearAlarmState()
 }
 
