@@ -115,11 +115,14 @@ func buildAlertArgs(d alertDialog, title, message string) []string {
 	return args
 }
 
-// alarmPlayers empareja reproductor con formato de sonido.
+// alarmPlayers empareja reproductor con formato de sonido. Son el RESPALDO de la
+// sirena generada (`alarmsound.go`), que va antes porque estos son sonidos de
+// notificación y no una alarma.
 //
 // El emparejamiento importa: `aplay` es ALSA puro y sólo reproduce WAV, mientras
 // paplay/pw-play (PulseAudio/PipeWire) manejan los .oga del tema freedesktop, que
-// es lo que trae instalado un escritorio típico.
+// es lo que trae instalado un escritorio típico. La sirena es WAV justamente para
+// que los tres la acepten, `aplay` incluido.
 var alarmPlayers = []struct {
 	bin    string
 	sounds []string
@@ -289,12 +292,20 @@ func (a *Agent) alarmLoopCmd(ctx context.Context) (*exec.Cmd, error) {
 		return nil, err
 	}
 
+	siren := a.ensureAlarmSiren()
+
 	for _, p := range alarmPlayers {
 		bin, err := exec.LookPath(p.bin)
 		if err != nil {
 			continue
 		}
-		sound := firstExisting(p.sounds)
+
+		candidatos := p.sounds
+		if siren != "" {
+			candidatos = append([]string{siren}, p.sounds...)
+		}
+
+		sound := firstExisting(candidatos)
 		if sound == "" {
 			continue
 		}

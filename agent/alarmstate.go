@@ -77,18 +77,23 @@ type persistedAlarm struct {
 	Volume volumeState `json:"volume"`
 }
 
-// alarmStatePath es la ruta del archivo de estado.
+// alarmDataDir es el directorio de los archivos de la alarma: el estado y la sirena
+// generada.
 //
-// En unix va a `/opt/observeragent`, que el desinstalador ya borra con
-// RemoveAll: un archivo que puede rearmar una alarma no debe sobrevivir a la
-// desinstalación del agente. En Windows va a `%PROGRAMDATA%\ObserverRMM`, que
-// pese al nombre del campo (WinTmpDir) no es un temporal del sistema y persiste
-// entre reinicios.
-func (a *Agent) alarmStatePath() string {
+// En unix es `/opt/observeragent`, que el desinstalador ya borra con RemoveAll: un
+// archivo que puede rearmar una alarma no debe sobrevivir a la desinstalación del
+// agente. En Windows es `%PROGRAMDATA%\ObserverRMM`, que pese al nombre del campo
+// (WinTmpDir) no es un temporal del sistema y persiste entre reinicios.
+func (a *Agent) alarmDataDir() string {
 	if runtime.GOOS == "windows" {
-		return filepath.Join(a.WinTmpDir, "alarm.json")
+		return a.WinTmpDir
 	}
-	return filepath.Join(nixAgentDir, "alarm.json")
+	return nixAgentDir
+}
+
+// alarmStatePath es la ruta del archivo de estado.
+func (a *Agent) alarmStatePath() string {
+	return filepath.Join(a.alarmDataDir(), "alarm.json")
 }
 
 // saveAlarmState escribe el estado de forma atómica.

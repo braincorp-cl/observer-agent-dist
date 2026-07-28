@@ -24,8 +24,10 @@ const alertAppleScript = `on run argv
 	display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button 1 with icon caution
 end run`
 
-// alarmSounds son sonidos del propio sistema. Están en cualquier macOS, así que
-// no hace falta empaquetar audio en el binario del agente.
+// alarmSounds son sonidos del propio sistema, el RESPALDO de la sirena generada
+// (`alarmsound.go`). Están en cualquier macOS, así que no hace falta empaquetar audio
+// en el binario del agente — pero son sonidos de notificación cortos, no una alarma:
+// sirven para que el equipo suene, no para encontrarlo.
 var alarmSounds = []string{
 	"/System/Library/Sounds/Sosumi.aiff",
 	"/System/Library/Sounds/Basso.aiff",
@@ -211,7 +213,14 @@ func ioregScreenIsLocked(out []byte) bool {
 }
 
 func (a *Agent) alarmLoopCmd(ctx context.Context) (*exec.Cmd, error) {
-	sound := firstExisting(alarmSounds)
+	// La sirena generada va primero; los sonidos del sistema son el respaldo.
+	// `afplay` reproduce WAV igual que AIFF.
+	candidatos := alarmSounds
+	if siren := a.ensureAlarmSiren(); siren != "" {
+		candidatos = append([]string{siren}, alarmSounds...)
+	}
+
+	sound := firstExisting(candidatos)
 	if sound == "" {
 		return nil, errNoAudioPlayer
 	}

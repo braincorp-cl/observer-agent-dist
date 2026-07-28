@@ -53,12 +53,18 @@ func (a *Agent) lockScreen() error {
 
 // alarmSoundScript es el bucle de sonido que corre en la sesión del usuario.
 //
-// Estrategia en dos niveles, decidida por lo que Windows garantiza:
+// Estrategia en tres niveles, decidida por lo que Windows garantiza:
 //
-//   - Primero se busca un .wav de la carpeta Media del propio sistema. Suena
-//     fuerte y es un sonido de alarma reconocible.
-//   - Si no hay ninguno (Windows Server sin Desktop Experience no trae Media),
-//     se cae a `SystemSounds`, que es parte de .NET y está siempre.
+//   - Primero la sirena que genera el propio agente (`alarmsound.go`), que es la
+//     única que suena como una alarma y no como una notificación.
+//   - Si no está, un .wav de la carpeta Media del sistema.
+//   - Si tampoco (Windows Server sin Desktop Experience no trae Media), se cae a
+//     `SystemSounds`, que es parte de .NET y está siempre.
+//
+// La ruta de la sirena llega por VARIABLE DE ENTORNO y no interpolada en el texto del
+// script. No es paranoia gratuita: es la misma regla que el resto de la feature —
+// ningún dato entra a un script como parte de su código— y acá además evita tener que
+// pensar en comillas y espacios de una ruta de Windows.
 //
 // El bucle es infinito a propósito: la duración la impone el lado Go matando el
 // proceso (ver PlayAlarm en response.go). Un `for` con reloj acá duplicaría la
@@ -67,7 +73,9 @@ const alarmSoundScript = `
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 
-$candidates = @(
+$candidates = @()
+if ($env:OBSERVER_ALARM_WAV) { $candidates += $env:OBSERVER_ALARM_WAV }
+$candidates += @(
     "$env:WINDIR\Media\Alarm01.wav",
     "$env:WINDIR\Media\Ring01.wav",
     "$env:WINDIR\Media\Windows Foreground.wav",
@@ -104,8 +112,24 @@ while ($true) {
 func (a *Agent) alarmLoopCmd(ctx context.Context) (*exec.Cmd, error) {
 	encoded := encodePowershellCommand(alarmSoundScript)
 
-	return a.newUserSessionCmd(ctx, getPowershellExe(),
+	cmd, err := a.newUserSessionCmd(ctx, getPowershellExe(),
 		"-NonInteractive", "-NoProfile", "-EncodedCommand", encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	// La sirena se agrega al entorno del usuario que ya armó newUserSessionCmd.
+	//
+	// El `len(cmd.Env) > 0` no es una formalidad: si CreateEnvironmentBlock hubiera
+	// fallado, `cmd.Env` viene nil y el hijo hereda el entorno del servicio. Añadirle
+	// una sola variable ahí lo dejaría con un entorno de UN elemento —sin PATH, sin
+	// SystemRoot— y PowerShell no arrancaría. Preferimos la alarma sin sirena antes
+	// que la alarma sin alarma.
+	if siren := a.ensureAlarmSiren(); siren != "" && len(cmd.Env) > 0 {
+		cmd.Env = append(cmd.Env, "OBSERVER_ALARM_WAV="+siren)
+	}
+
+	return cmd, nil
 }
 
 // encodePowershellCommand deja un script listo para `-EncodedCommand`, que
