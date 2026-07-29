@@ -1262,7 +1262,20 @@ func (a *Agent) RecoverMesh() {
 }
 
 func (a *Agent) getMeshNodeID() (string, error) {
-	out, err := CMD(a.MeshSystemEXE, []string{"-nodeid"}, 10, false)
+	// `--no-embedded=1` va DESPUÉS de `-nodeid`, igual que en Unix: el binario
+	// que MeshCentral entrega para instalar puede traer un instalador JS anexado
+	// que se dispara ante CUALQUIER argumento y responde con la salida de una
+	// reinstalación en vez del id. El detalle completo está en meshnodeid.go.
+	//
+	// Medido en los TRES Windows de la flota el 2026-07-28 (LAPTOP-DSHQMP1O,
+	// DESKTOP-4G49P7G, DESKTOP-8I6R7NF): con y sin la bandera el id es EL MISMO,
+	// así que agregarla no cambia nada donde hoy funciona. Los tres binarios sí
+	// traen un bloque anexado, pero es el de configuración `.msh` —GUID
+	// terminado en C19—, que es lo normal y es inofensivo; el peligroso es el de
+	// JavaScript, terminado en C18, que en Windows no apareció. La bandera va
+	// por si aparece: el tamaño del archivo NO sirve para distinguirlos, hay que
+	// mirar los últimos 16 bytes.
+	out, err := CMD(a.MeshSystemEXE, []string{"-nodeid", "--no-embedded=1"}, 10, false)
 	if err != nil {
 		a.Logger.Debugln(err)
 		return "", err
@@ -1272,16 +1285,24 @@ func (a *Agent) getMeshNodeID() (string, error) {
 	stderr := out[1]
 
 	if stderr != "" {
+		// Acá antes se devolvía `err`, que en este punto es SIEMPRE nil: el
+		// fallo se perdía y SyncMeshNodeID seguía adelante posteando un id
+		// vacío al servidor.
 		a.Logger.Debugln(stderr)
-		return "", err
+		return "", errors.New("mesh node id: stderr no vacío")
 	}
 
-	if stdout == "" || strings.Contains(strings.ToLower(StripAll(stdout)), "not defined") {
+	// Misma validación que Unix, y por la misma razón: que haya salida no
+	// alcanza. El valor con el que quedó registrado el equipo que destapó esta
+	// familia era hexadecimal legítimo —una MAC—, así que se exige además largo
+	// de identificador. Rechazar de más es barato: sin id, SyncMeshNodeID
+	// reintenta en el ciclo siguiente y el servidor conserva el que ya tenía.
+	if !esNodeIDValido(stdout) {
 		a.Logger.Debugln("Failed getting mesh node id", stdout)
 		return "", errors.New("failed to get mesh node id")
 	}
 
-	return stdout, nil
+	return strings.TrimSpace(stdout), nil
 }
 
 func (a *Agent) Start(_ service.Service) error {
