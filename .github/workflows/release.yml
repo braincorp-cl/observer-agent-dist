@@ -61,9 +61,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Linux va por el FLUJO MODERNO (T018 / ADR-023 §7): Go 1.21+ sólo pide
+      # kernel Linux 3.2+ (2012), así que aquí no hay flota vieja que sostener
+      # y el pin legacy no compraba nada. Subirlo cierra las 39
+      # vulnerabilidades alcanzables de la stdlib medidas con 1.20.x — vienen
+      # del compilador, no de go.mod, así que se cierran sin tocar una sola
+      # dependencia. El doble flujo es EXCLUSIVAMENTE por Windows.
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.20.14'
+          go-version: '1.26.5'
 
       - name: Set version
         id: version
