@@ -68,8 +68,11 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          $ver = (& $iscc 2>&1 | Select-String -Pattern 'Inno Setup .*Compiler|version' | Select-Object -First 1)
-          "INNO_TOOLING=$ver" | Tee-Object -Append runner-os.txt
+          # Del ejecutable, no del banner: el banner dice "Inno Setup 6
+          # Command-Line Compiler" y se queda igual entre versiones, que es
+          # exactamente el dato que no sirve para diagnosticar deriva.
+          $ver = (Get-Item $iscc).VersionInfo.FileVersion
+          "INNO_VERSION=$ver" | Tee-Object -Append runner-os.txt
 
       - name: Preparar los dos testigos
         shell: pwsh
