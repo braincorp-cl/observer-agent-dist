@@ -25,6 +25,15 @@ import (
 // `darwin && cgo` es un subconjunto de `darwin`, así que el proveedor de
 // geolocalización lo sigue viendo igual.
 
+// activeGraphicalSessionType es el contrapunto de la versión Linux, donde el dato
+// distingue X11 de Wayland y con eso predice si «Tomar control» va a mostrar una
+// pantalla negra. En macOS **no aplica**: no hay tipos de sesión intercambiables
+// —siempre es Aqua— y el KVM del meshagent funciona ahí. Devolver "" hace que
+// `osString` no anexe nada, que es el comportamiento correcto.
+func activeGraphicalSessionType() string {
+	return ""
+}
+
 // consoleUser devuelve el uid y el nombre del usuario con la sesión gráfica
 // abierta, leyendo el dueño de /dev/console.
 //

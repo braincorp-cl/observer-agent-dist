@@ -243,6 +243,66 @@ func loginctlActiveSession() (*logindSession, error) {
 // `active` se devuelve aparte porque una sesión gráfica de usuario que todavía no
 // está marcada activa sirve como respaldo: algunos display managers reportan el
 // estado con retraso.
+// activeGraphicalSessionType devuelve "x11" o "wayland" según la sesión gráfica
+// del asiento, o "" si no hay ninguna (servidor sin escritorio, sólo ttys, o
+// logind ausente).
+//
+// POR QUÉ SE REPORTA ESTE DATO: decide si «Tomar control» sirve. El KVM del
+// meshagent es X11 puro (`XOpenDisplay`, `XShmGetImage`, `XTestFakeKeyEvent`), así
+// que en una sesión **Wayland** MeshCentral ofrece el botón, la sesión *conecta* y
+// lo que llega es una **pantalla negra** — medido el 2026-08-02 en un Fedora 44 KDE:
+// una captura X11 de `:0` reducida a 4×4 en gris dio 16 ceros, con una fuente
+// sintética como control para descartar que fuera la herramienta. El `caps=31` que
+// el nodo publica en MeshCentral **no distingue** Wayland de X11, así que sin este
+// dato en la consola no hay manera de saberlo antes de intentarlo.
+func activeGraphicalSessionType() string {
+	out, err := exec.Command("loginctl", "list-sessions", "--no-legend").Output()
+	if err != nil {
+		return ""
+	}
+
+	var sessions []map[string]string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 1 {
+			continue
+		}
+		props, err := loginctlSessionProps(fields[0])
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, props)
+	}
+
+	return pickSessionType(sessions)
+}
+
+// pickSessionType elige qué tipo de sesión reportar. Separada de `loginctl` para
+// poder probarla sin logind.
+//
+// Prefiere la sesión ACTIVA y no la primera que aparezca: en un equipo con una
+// sesión X11 olvidada y una Wayland en uso, la que decide si el escritorio remoto
+// va a servir es la del asiento. Si ninguna está activa se devuelve la primera
+// utilizable, que sigue siendo más informativo que nada.
+func pickSessionType(sessions []map[string]string) string {
+	fallback := ""
+
+	for _, props := range sessions {
+		usable, active := sessionIsUsable(props)
+		if !usable {
+			continue
+		}
+		if active {
+			return props["Type"]
+		}
+		if fallback == "" {
+			fallback = props["Type"]
+		}
+	}
+
+	return fallback
+}
+
 func sessionIsUsable(props map[string]string) (usable, active bool) {
 	graphical := props["Type"] == "x11" || props["Type"] == "wayland"
 	userSess := props["Class"] == "user"

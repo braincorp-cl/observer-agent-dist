@@ -120,7 +120,21 @@ func (a *Agent) osString() string {
 		return "error getting host info"
 	}
 	plat := titleCasePlatform(h.Platform)
-	return fmt.Sprintf("%s %s %s %s", plat, h.PlatformVersion, h.KernelArch, h.KernelVersion)
+	desc := fmt.Sprintf("%s %s %s %s", plat, h.PlatformVersion, h.KernelArch, h.KernelVersion)
+
+	// El tipo de sesión gráfica se anexa acá —y no en un campo nuevo— para que
+	// aparezca en la consola SIN tocar el backend ni el frontend: `operating_system`
+	// ya se muestra en la lista de equipos. Lo único que se parsea de este campo en
+	// el servidor es "64 bit"/"32 bit" (`agents/models.py`), así que el sufijo no
+	// rompe nada aguas abajo.
+	//
+	// Importa porque decide si «Tomar control» sirve: ver activeGraphicalSessionType.
+	// Vacío —servidor sin escritorio, sólo ttys, macOS— no anexa nada.
+	if sessionType := activeGraphicalSessionType(); sessionType != "" {
+		desc += fmt.Sprintf(" (%s)", sessionType)
+	}
+
+	return desc
 }
 
 func NewAgentConfig() *rmm.AgentConfig {
