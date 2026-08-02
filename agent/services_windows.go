@@ -3,7 +3,7 @@ package agent
 import (
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )

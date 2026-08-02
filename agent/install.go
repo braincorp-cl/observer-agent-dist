@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	trmm "github.com/braincorp/observeragent/shared"
+	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	"github.com/go-resty/resty/v2"
 )
 

@@ -6,7 +6,7 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/ugorji/go/codec"
-	trmm "github.com/braincorp/observeragent/shared"
+	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	"github.com/go-resty/resty/v2"
 )
 

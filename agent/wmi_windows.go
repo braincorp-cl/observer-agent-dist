@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/StackExchange/wmi"
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func GetWin32_USBController() ([]interface{}, error) {

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/braincorp/observeragent/agent"
+	"github.com/braincorp-cl/observer-agent-dist/agent"
 	"github.com/kardianos/service"
 	"github.com/sirupsen/logrus"
 )

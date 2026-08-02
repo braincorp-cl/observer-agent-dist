@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-	trmm "github.com/braincorp/observeragent/shared"
+	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) installerMsg(msg, alert string, silent bool) {

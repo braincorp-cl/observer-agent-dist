@@ -1,4 +1,4 @@
-module github.com/braincorp/observeragent
+module github.com/braincorp-cl/observer-agent-dist
 
 go 1.20
 

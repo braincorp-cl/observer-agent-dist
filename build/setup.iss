@@ -9,7 +9,7 @@
   #define MyAppVersionNumeric MyAppVersion
 #endif
 #define MyAppPublisher "BRAINCORP OP SPA"
-#define MyAppURL "https://github.com/braincorp"
+#define MyAppURL "https://docs.observer.cl"
 #define MyAppExeName "observeragent.exe"
 #define MESHEXE "meshagent.exe"
 #define MESHDIR "{sd}\Program Files\Mesh Agent"

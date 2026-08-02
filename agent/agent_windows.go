@@ -19,7 +19,7 @@ import (
 	"time"
 	"unsafe"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ps "github.com/elastic/go-sysinfo"
 	"github.com/fourcorelabs/wintoken"
 	"github.com/go-ole/go-ole"

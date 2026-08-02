@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	nats "github.com/nats-io/nats.go"
 	"github.com/ugorji/go/codec"
 )

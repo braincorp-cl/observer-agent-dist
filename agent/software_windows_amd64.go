@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	wapi "github.com/iamacarpet/go-win64api"
-	trmm "github.com/braincorp/observeragent/shared"
+	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) GetInstalledSoftware() []trmm.WinSoftwareList {

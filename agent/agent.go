@@ -21,7 +21,7 @@ import (
 
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ps "github.com/elastic/go-sysinfo"
 	gocmd "github.com/go-cmd/cmd"
 	"github.com/go-resty/resty/v2"

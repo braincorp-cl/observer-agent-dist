@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ps "github.com/elastic/go-sysinfo"
 	gops "github.com/shirou/gopsutil/v3/process"
 )

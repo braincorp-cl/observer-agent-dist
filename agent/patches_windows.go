@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) GetWinUpdates() {

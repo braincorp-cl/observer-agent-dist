@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ps "github.com/elastic/go-sysinfo"
 	"github.com/go-resty/resty/v2"
 	"github.com/jaypipes/ghw"

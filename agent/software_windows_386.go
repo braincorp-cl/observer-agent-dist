@@ -5,7 +5,7 @@ import (
 
 	so "github.com/iamacarpet/go-win64api/shared"
 	wapf "github.com/wh1te909/go-win64api"
-	trmm "github.com/braincorp/observeragent/shared"
+	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func installedSoftwareList() ([]so.Software, error) {

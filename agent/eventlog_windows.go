@@ -8,7 +8,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	rmm "github.com/braincorp/observeragent/shared"
+	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	"github.com/gonutz/w32/v2"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
