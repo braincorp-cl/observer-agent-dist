@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -119,7 +120,179 @@ func (a *Agent) PublicIP() string {
 		a.Logger.Debugln("PublicIP return: ", ip)
 		break
 	}
+
+	// Fallback por DNS cuando el camino HTTPS no dejó nada usable. Ver
+	// publicIPViaDNS: existe porque una red que inspecciona TLS rompe los tres
+	// servicios de arriba sin romper el agente.
+	if !IsValidIP(ip) {
+		if dnsIP := a.publicIPViaDNS(); dnsIP != "" {
+			return dnsIP
+		}
+	}
 	return ip
+}
+
+// Presupuesto por consulta DNS. Corto a propósito: esto corre en el ciclo de
+// check-in de la IP pública (CHECKIN_PUBIP), y ya viene detrás de los intentos
+// HTTPS, así que el peor caso acumulado no debe volverse notorio.
+const dnsPublicIPTimeout = 2 * time.Second
+
+// Servicios DNS que responden con la IP de origen de la consulta. Dos, de
+// operadores independientes, para poder cruzar el resultado.
+//
+// ⚠️ Se dialan por IP LITERAL a propósito: si hubiera que resolver primero el
+// nombre del propio servidor, una red que rompe la resolución haría fallar el
+// fallback justo en el escenario para el que existe.
+var dnsPublicIPProviders = []struct {
+	name   string
+	lookup func(context.Context) (string, error)
+}{
+	{
+		// myip.opendns.com devuelve un registro A con la IP de origen.
+		name: "opendns",
+		lookup: func(ctx context.Context) (string, error) {
+			addrs, err := newFixedDNSResolver("208.67.222.222:53").LookupHost(ctx, "myip.opendns.com")
+			if err != nil {
+				return "", err
+			}
+			if len(addrs) == 0 {
+				return "", errors.New("respuesta vacía de opendns")
+			}
+			return StripAll(addrs[0]), nil
+		},
+	},
+	{
+		// o-o.myaddr.l.google.com devuelve un TXT con la IP de origen. Va contra
+		// ns1.google.com, que es autoritativo para ese nombre.
+		name: "google",
+		lookup: func(ctx context.Context) (string, error) {
+			txts, err := newFixedDNSResolver("216.239.32.10:53").LookupTXT(ctx, "o-o.myaddr.l.google.com")
+			if err != nil {
+				return "", err
+			}
+			if len(txts) == 0 {
+				return "", errors.New("respuesta vacía de google")
+			}
+			return StripAll(strings.Trim(txts[0], `"`)), nil
+		},
+	},
+}
+
+// newFixedDNSResolver arma un resolver que ignora /etc/resolv.conf y pregunta
+// SIEMPRE al servidor indicado: la respuesta que buscamos ES la IP de origen que
+// ve ese servidor, así que preguntarle al resolver del sistema —que suele ser el
+// router de la LAN— devolvería una dirección privada o nada.
+//
+// PreferGo es obligatorio: sin él, en algunas plataformas se usa el resolver del
+// sistema vía cgo y este Dial se ignora en silencio.
+func newFixedDNSResolver(server string) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: dnsPublicIPTimeout}
+			return d.DialContext(ctx, network, server)
+		},
+	}
+}
+
+// publicIPViaDNS obtiene la IP pública por DNS en vez de HTTPS.
+//
+// POR QUÉ EXISTE (medido el 2026-08-02 en un Fedora 44 de la flota): un firewall
+// Sophos con inspección SSL en el camino hace que los tres servicios HTTPS de
+// PublicIP fallen con "self-signed certificate in certificate chain", porque su CA
+// no está en el trust store del equipo. El agente entonces reportaba "error" y la
+// consola lo mostraba como si el agente estuviera fallando. UDP/53 no lleva TLS,
+// así que no hay cadena que validar y estas consultas pasan donde HTTPS no pasa.
+//
+// ⚠️ LO QUE ESTE VALOR SIGNIFICA, Y NO ES OBVIO: la respuesta es la IP de origen
+// que ve el servidor DNS consultado, o sea la salida de la ruta que el sistema
+// elija para llegar a ÉL. En un equipo con VPN de túnel parcial eso puede no ser
+// la misma ruta que usa el tráfico general: en el Fedora medido, las rutas hacia
+// los resolvers públicos las empuja la VPN, así que esto devuelve la salida de la
+// VPN y no la del enlace local. Es correcto como "IP pública" y es mejor que
+// "error", pero NO sirve para deducir en qué enlace físico está el equipo.
+//
+// Devuelve "" si ningún proveedor dejó una IP pública utilizable; el llamador
+// conserva entonces el "error" de siempre.
+func (a *Agent) publicIPViaDNS() string {
+	var results []dnsPublicIPResult
+
+	for _, p := range dnsPublicIPProviders {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsPublicIPTimeout)
+		ip, err := p.lookup(ctx)
+		cancel()
+
+		if err != nil {
+			a.Logger.Debugln("publicIPViaDNS", p.name, "err", err)
+			continue
+		}
+		if !isUsablePublicIP(ip) {
+			// Un resolver secuestrado, o el router de la LAN respondiendo por su
+			// cuenta, devuelve algo que parece IP pero no lo es.
+			a.Logger.Debugln("publicIPViaDNS", p.name, "descartada", ip)
+			continue
+		}
+		results = append(results, dnsPublicIPResult{provider: p.name, ip: ip})
+	}
+
+	ip, agreed := pickDNSPublicIP(results)
+	switch {
+	case ip == "":
+		a.Logger.Debugln("publicIPViaDNS: ningún proveedor respondió una IP utilizable")
+	case !agreed && len(results) > 1:
+		// No es necesariamente un ataque: con túnel parcial cada resolver puede
+		// alcanzarse por una ruta distinta y las dos respuestas ser legítimas. Se
+		// registra y se sigue con la primera en vez de descartar las dos.
+		a.Logger.Debugln("publicIPViaDNS: proveedores discrepan", results, "se usa", ip)
+	case !agreed:
+		a.Logger.Debugln("publicIPViaDNS: sin verificación cruzada, un solo proveedor respondió:", ip)
+	default:
+		a.Logger.Debugln("publicIPViaDNS: verificación cruzada OK:", ip)
+	}
+	return ip
+}
+
+type dnsPublicIPResult struct {
+	provider string
+	ip       string
+}
+
+// pickDNSPublicIP decide con qué respuesta quedarse. Separada de la consulta para
+// poder testear la decisión sin red. `agreed` es true sólo cuando dos proveedores
+// independientes dijeron lo mismo.
+func pickDNSPublicIP(results []dnsPublicIPResult) (ip string, agreed bool) {
+	switch len(results) {
+	case 0:
+		return "", false
+	case 1:
+		return results[0].ip, false
+	default:
+		return results[0].ip, results[0].ip == results[1].ip
+	}
+}
+
+// isUsablePublicIP exige IPv4 enrutable en Internet. Rechaza lo que no sirve para
+// este campo aunque sea una IP válida: privadas (RFC1918), loopback, link-local,
+// multicast y CGNAT (100.64/10, RFC6598 — es NAT del operador, no una dirección
+// que el mundo vea). Se limita a IPv4 porque el resto del flujo de PublicIP ya
+// prefiere IPv4, y porque estas consultas van a servidores IPv4.
+func isUsablePublicIP(s string) bool {
+	parsed := net.ParseIP(s)
+	if parsed == nil {
+		return false
+	}
+	v4 := parsed.To4()
+	if v4 == nil {
+		return false
+	}
+	if v4.IsLoopback() || v4.IsPrivate() || v4.IsLinkLocalUnicast() || v4.IsMulticast() || v4.IsUnspecified() {
+		return false
+	}
+	// 100.64.0.0/10
+	if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	return true
 }
 
 // GenerateAgentID creates and returns a unique agent id using crypto/rand for cryptographic entropy
