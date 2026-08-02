@@ -1,0 +1,124 @@
+name: Probe — InnoSetup dual select
+
+# Verificación acotada para la enmienda propuesta al ADR-023 (selección del
+# binario dentro del instalador en vez de en el backend). NO construye producto
+# ni publica nada. Vive en la rama del experimento; se borra o se promueve
+# según el resultado.
+#
+# Lo que NO puede responder: el comportamiento en Windows 7/8/8.1. GitHub no
+# ofrece runners de esas versiones. Esa mitad queda 🔴 y exige una máquina real.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/inno-dual-select
+
+jobs:
+  probe:
+    name: Selección por versión en Windows real
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Identificar el Windows del runner (fuente independiente)
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "RUNNER_CAPTION=$($os.Caption)"      | Tee-Object -Append runner-os.txt
+          "RUNNER_VERSION=$($os.Version)"      | Tee-Object -Append runner-os.txt
+          "RUNNER_BUILD=$($os.BuildNumber)"    | Tee-Object -Append runner-os.txt
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Preparar los dos testigos
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path probe_src, probe_out | Out-Null
+          Set-Content -NoNewline probe_src\modern.txt 'MODERN'
+          Set-Content -NoNewline probe_src\legacy.txt 'LEGACY'
+
+      - name: Compilar sonda normal y sonda invertida
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $src  = (Resolve-Path probe_src).Path
+          $out  = (Resolve-Path probe_out).Path
+          & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/O$out" "/Fdualprobe"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falló en la sonda normal" }
+          & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/DFLIP=1" "/O$out" "/Fdualprobe-flip"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falló en la sonda invertida" }
+
+      - name: Ejecutar la sonda normal
+        shell: pwsh
+        run: |
+          & .\probe_out\dualprobe.exe /VERYSILENT /LOG=$PWD\log-normal.txt | Out-Null
+          Start-Sleep -Seconds 2
+
+      - name: Ejecutar la sonda invertida
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force C:\dualprobe -ErrorAction SilentlyContinue
+          & .\probe_out\dualprobe-flip.exe /VERYSILENT /LOG=$PWD\log-flip.txt | Out-Null
+          Start-Sleep -Seconds 2
+          Copy-Item C:\dualprobe\selected.txt selected-flip.txt -ErrorAction SilentlyContinue
+
+      - name: Veredicto
+        shell: pwsh
+        run: |
+          $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+          $detected  = (Select-String -Path log-normal.txt -Pattern 'PROBE_DETECTED_VERSION=(.+)$').Matches.Groups[1].Value.Trim()
+          $flipPick  = if (Test-Path selected-flip.txt) { Get-Content -Raw selected-flip.txt } else { '<NADA INSTALADO>' }
+
+          # La sonda normal se ejecutó primero; su resultado quedó pisado por la
+          # invertida, así que se relee del log de la normal cuál copió.
+          $normalPick = if ((Select-String -Path log-normal.txt -Pattern 'modern\.txt' -Quiet)) { 'MODERN' }
+                        elseif ((Select-String -Path log-normal.txt -Pattern 'legacy\.txt' -Quiet)) { 'LEGACY' }
+                        else { '<NADA INSTALADO>' }
+
+          Write-Host "=============== VEREDICTO ==============="
+          Write-Host "Build real del runner (Win32_OperatingSystem) : $realBuild"
+          Write-Host "Version que REPORTA InnoSetup                 : $detected"
+          Write-Host "Sonda normal   (modern=MinVersion 10.0)       : $normalPick"
+          Write-Host "Sonda invertida (legacy=MinVersion 10.0)      : $flipPick"
+          Write-Host "========================================="
+
+          $fail = $false
+
+          # P1 — la trampa del manifest. Si Inno reportara 6.x en un Windows 10+,
+          # MinVersion: 10.0 jamás se cumpliría y todo caería a legacy en silencio.
+          if ($realBuild -ge 10240 -and $detected -notlike '10.*') {
+            Write-Host "::error::P1 FALLA — InnoSetup reporta '$detected' en un build $realBuild. Miente: la variante InnoSetup del ADR-023 NO es viable."
+            $fail = $true
+          } else {
+            Write-Host "P1 OK — InnoSetup reporta la version verdadera ($detected), no 6.x."
+          }
+
+          # P2 — que discrimine y no dependa del orden de [Files].
+          if ($normalPick -ne 'MODERN') {
+            Write-Host "::error::P2 FALLA — la sonda normal instalo '$normalPick', se esperaba MODERN."
+            $fail = $true
+          }
+          if ($flipPick.Trim() -ne 'LEGACY') {
+            Write-Host "::error::P2 FALLA — la sonda invertida instalo '$flipPick', se esperaba LEGACY. Si coincide con la normal, decide el ORDEN y no la condicion."
+            $fail = $true
+          }
+          if (-not $fail) {
+            Write-Host "P2 OK — invertir las condiciones sin tocar el orden cambio el archivo instalado."
+          }
+
+          if ($fail) { exit 1 }
+
+      - name: Guardar evidencia
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-evidence
+          path: |
+            log-normal.txt
+            log-flip.txt
+            runner-os.txt
+            selected-flip.txt
+          retention-days: 7
