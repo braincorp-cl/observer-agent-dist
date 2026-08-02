@@ -36,9 +36,15 @@ jobs:
       - name: Preparar los dos testigos
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path probe_src, probe_out | Out-Null
-          Set-Content -NoNewline probe_src\modern.txt 'MODERN'
-          Set-Content -NoNewline probe_src\legacy.txt 'LEGACY'
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'probe_src'
+          New-Item -ItemType Directory -Force -Path $src, (Join-Path $PWD 'probe_out') | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $src 'modern.txt'), 'MODERN')
+          [System.IO.File]::WriteAllText((Join-Path $src 'legacy.txt'), 'LEGACY')
+          Get-ChildItem $src | Out-String | Write-Host
+          foreach ($f in 'modern.txt','legacy.txt') {
+            if (-not (Test-Path (Join-Path $src $f))) { throw "no se creo $f" }
+          }
 
       - name: Compilar sonda normal y sonda invertida
         shell: pwsh
@@ -51,11 +57,18 @@ jobs:
           & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/DFLIP=1" "/O$out" "/Fdualprobe-flip"
           if ($LASTEXITCODE -ne 0) { throw "ISCC falló en la sonda invertida" }
 
+      # El veredicto se lee del DISCO, nunca del log: Inno registra también los
+      # archivos que DESCARTA por condición de versión, así que buscar
+      # "modern.txt" en el log da un falso positivo garantizado.
       - name: Ejecutar la sonda normal
         shell: pwsh
         run: |
+          Remove-Item -Recurse -Force C:\dualprobe -ErrorAction SilentlyContinue
           & .\probe_out\dualprobe.exe /VERYSILENT /LOG=$PWD\log-normal.txt | Out-Null
           Start-Sleep -Seconds 2
+          if (Test-Path C:\dualprobe\selected.txt) {
+            Copy-Item C:\dualprobe\selected.txt selected-normal.txt
+          }
 
       - name: Ejecutar la sonda invertida
         shell: pwsh
@@ -63,20 +76,19 @@ jobs:
           Remove-Item -Recurse -Force C:\dualprobe -ErrorAction SilentlyContinue
           & .\probe_out\dualprobe-flip.exe /VERYSILENT /LOG=$PWD\log-flip.txt | Out-Null
           Start-Sleep -Seconds 2
-          Copy-Item C:\dualprobe\selected.txt selected-flip.txt -ErrorAction SilentlyContinue
+          if (Test-Path C:\dualprobe\selected.txt) {
+            Copy-Item C:\dualprobe\selected.txt selected-flip.txt
+          }
 
       - name: Veredicto
         shell: pwsh
         run: |
           $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
-          $detected  = (Select-String -Path log-normal.txt -Pattern 'PROBE_DETECTED_VERSION=(.+)$').Matches.Groups[1].Value.Trim()
-          $flipPick  = if (Test-Path selected-flip.txt) { Get-Content -Raw selected-flip.txt } else { '<NADA INSTALADO>' }
+          $m = Select-String -Path log-normal.txt -Pattern 'PROBE_DETECTED_VERSION=(.+)$'
+          $detected = if ($m) { $m.Matches[0].Groups[1].Value.Trim() } else { '<NO REPORTADO>' }
 
-          # La sonda normal se ejecutó primero; su resultado quedó pisado por la
-          # invertida, así que se relee del log de la normal cuál copió.
-          $normalPick = if ((Select-String -Path log-normal.txt -Pattern 'modern\.txt' -Quiet)) { 'MODERN' }
-                        elseif ((Select-String -Path log-normal.txt -Pattern 'legacy\.txt' -Quiet)) { 'LEGACY' }
-                        else { '<NADA INSTALADO>' }
+          $normalPick = if (Test-Path selected-normal.txt) { (Get-Content -Raw selected-normal.txt).Trim() } else { '<NADA INSTALADO>' }
+          $flipPick   = if (Test-Path selected-flip.txt)   { (Get-Content -Raw selected-flip.txt).Trim() }   else { '<NADA INSTALADO>' }
 
           Write-Host "=============== VEREDICTO ==============="
           Write-Host "Build real del runner (Win32_OperatingSystem) : $realBuild"
@@ -101,7 +113,7 @@ jobs:
             Write-Host "::error::P2 FALLA — la sonda normal instalo '$normalPick', se esperaba MODERN."
             $fail = $true
           }
-          if ($flipPick.Trim() -ne 'LEGACY') {
+          if ($flipPick -ne "LEGACY") {
             Write-Host "::error::P2 FALLA — la sonda invertida instalo '$flipPick', se esperaba LEGACY. Si coincide con la normal, decide el ORDEN y no la condicion."
             $fail = $true
           }
@@ -120,5 +132,6 @@ jobs:
             log-normal.txt
             log-flip.txt
             runner-os.txt
+            selected-normal.txt
             selected-flip.txt
           retention-days: 7
