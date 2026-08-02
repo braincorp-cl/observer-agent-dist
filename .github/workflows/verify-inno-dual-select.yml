@@ -1,18 +1,49 @@
-name: Probe — InnoSetup dual select
+name: Corte de versión del instalador Windows
 
-# Verificación acotada para la enmienda propuesta al ADR-023 (selección del
-# binario dentro del instalador en vez de en el backend). NO construye producto
-# ni publica nada. Vive en la rama del experimento; se borra o se promueve
-# según el resultado.
+# TEST PERMANENTE. Custodia el mecanismo sobre el que descansa la §Enmienda del
+# ADR-023: que el instalador —y no el backend— elija entre el binario legacy y
+# el moderno, con MinVersion: 10.0 / OnlyBelowVersion: 10.0 sobre dos entradas
+# de [Files] que comparten DestName.
 #
-# Lo que NO puede responder: el comportamiento en Windows 7/8/8.1. GitHub no
-# ofrece runners de esas versiones. Esa mitad queda 🔴 y exige una máquina real.
+# POR QUÉ ES PERMANENTE Y NO UNA VERIFICACIÓN DE UNA VEZ:
+# el modo de falla que vigila es SILENCIOSO Y SE VE COMO ÉXITO. Si InnoSetup
+# dejara de reportar la versión verdadera (GetVersionEx devuelve 6.2 en Win8.1+
+# sin manifestar), MinVersion: 10.0 no se cumpliría nunca, TODO Windows moderno
+# recibiría el binario legacy —sin parches de seguridad de Go desde 2023— y el
+# instalador terminaría en éxito. Nadie lo notaría hasta auditar un equipo.
+#
+# Y las dos piezas que podrían romperlo NO viven en este repo: `choco install
+# innosetup` trae SIEMPRE la última versión de InnoSetup, y la imagen de
+# windows-latest se renueva sola. De ahí el cron semanal: los disparadores por
+# push/PR sólo cazan cambios nuestros.
+#
+# NO construye producto ni publica nada.
+#
+# ALCANCE ACTUAL: verifica la MECÁNICA con testigos de texto, no el setup.iss
+# real — la doble entrada de [Files] todavía no existe ahí (T017 de la feature
+# 029). Cuando T017 aterrice, este workflow debe pasar a afirmar también sobre
+# `build/setup.iss`, no sólo sobre la sonda.
+#
+# LO QUE NO PUEDE RESPONDER: el comportamiento en Windows 7/8/8.1. GitHub no
+# ofrece runners de esas versiones, así que la rama OnlyBelowVersion queda
+# probada sólo por inversión lógica. Esa mitad sigue 🔴 y exige máquina real
+# (T026).
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - experiment/inno-dual-select
+    branches: [main]
+    paths:
+      - 'build/**'
+      - '.github/workflows/verify-inno-dual-select.yml'
+  pull_request:
+    paths:
+      - 'build/**'
+      - '.github/workflows/verify-inno-dual-select.yml'
+  # Lunes 09:00 UTC. Caza la deriva que no pasa por un commit nuestro: versión
+  # nueva de InnoSetup desde chocolatey, o imagen nueva de windows-latest.
+  schedule:
+    - cron: '0 9 * * 1'
 
 jobs:
   probe:
@@ -29,9 +60,16 @@ jobs:
           "RUNNER_VERSION=$($os.Version)"      | Tee-Object -Append runner-os.txt
           "RUNNER_BUILD=$($os.BuildNumber)"    | Tee-Object -Append runner-os.txt
 
+      # La version de InnoSetup NO esta pinneada a proposito: queremos que este
+      # test se entere cuando chocolatey traiga una nueva. Se registra para que,
+      # el dia que falle, el log diga QUE cambio.
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $ver = (& $iscc 2>&1 | Select-String -Pattern 'Inno Setup .*Compiler|version' | Select-Object -First 1)
+          "INNO_TOOLING=$ver" | Tee-Object -Append runner-os.txt
 
       - name: Preparar los dos testigos
         shell: pwsh
@@ -91,6 +129,7 @@ jobs:
           $flipPick   = if (Test-Path selected-flip.txt)   { (Get-Content -Raw selected-flip.txt).Trim() }   else { '<NADA INSTALADO>' }
 
           Write-Host "=============== VEREDICTO ==============="
+          Get-Content runner-os.txt | ForEach-Object { Write-Host $_ }
           Write-Host "Build real del runner (Win32_OperatingSystem) : $realBuild"
           Write-Host "Version que REPORTA InnoSetup                 : $detected"
           Write-Host "Sonda normal   (modern=MinVersion 10.0)       : $normalPick"

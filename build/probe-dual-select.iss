@@ -1,5 +1,13 @@
 ; Sonda de verificación — NO es un instalador de producto.
 ;
+; TEST PERMANENTE (promovido el 2026-08-02). Lo corre
+; .github/workflows/verify-inno-dual-select.yml; ver ahí por qué es permanente
+; y no una verificación de una vez.
+;
+; ⚠️ Mientras la doble entrada de [Files] no exista en build/setup.iss (T017 de
+; la feature 029), esta sonda es lo ÚNICO que ejerce el mecanismo. No borrarla
+; "porque el instalador real ya lo hace": todavía no lo hace.
+;
 ; Responde dos preguntas que gatean la enmienda propuesta al ADR-023:
 ;
 ;   P1. ¿InnoSetup reporta la versión VERDADERA de Windows, o miente con 6.2?
