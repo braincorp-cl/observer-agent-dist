@@ -164,6 +164,21 @@ jobs:
           path: ${{ env.BINARY }}
           retention-days: 1
 
+  # Windows es el ÚNICO SO con doble flujo de build (ADR-023 §7): Go 1.21+ dejó
+  # caer Win7/8/8.1/Server 2008 R2 y 2012, y esa flota hay que seguir sirviéndola.
+  # El instalador se lleva los DOS binarios y elige en tiempo de extracción
+  # (§Enmienda E1 del ADR-023 ⇒ build/setup.iss).
+  #
+  # POR QUÉ LOS DOS BUILDS VIVEN EN EL MISMO JOB Y NO EN DOS JOBS SEPARADOS:
+  # salen del MISMO árbol de fuentes —lo único que cambia es el compilador
+  # (§5: `go.mod` se queda en `go 1.20`)—, así que separarlos sólo agregaría
+  # artefactos intermedios. Y esos artefactos serían un problema real: el job
+  # `release` descarga TODO con merge-multiple y publica `binaries/*` a ciegas,
+  # de modo que un `observeragent-modern.exe` suelto terminaría publicado como
+  # asset y rompería el invariante de 8 assets, uno por arquitectura (W-GOT-10).
+  # El riesgo que sí introduce compartir job —que los dos `setup-go` se pisen el
+  # PATH y ambos binarios salgan del mismo compilador— lo caza el paso de
+  # verificación de abajo, que mide el Go EMBEBIDO en cada binario.
   build-windows-installer:
     name: Build Windows installer
     needs: [validate-notes]
@@ -174,16 +189,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.20.14'
-
       - name: Set version
         id: version
         shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
-      - name: Build agent binary
+      # ── Flujo LEGACY ────────────────────────────────────────────────────────
+      # 1.20.14 es el último Go de la serie 1.20 y el último que sirve Win7. Queda
+      # clavado ahí: este flujo es de COMPATIBILIDAD, no de seguridad (ADR-023 §8).
+      # Las ~39 vulnerabilidades alcanzables de la stdlib siguen vivas en este
+      # binario — deuda aceptada y documentada, no un pendiente.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.14'
+
+      - name: Build legacy agent binary (Go 1.20.14)
         shell: bash
         env:
           CGO_ENABLED: '0'
@@ -191,7 +211,48 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p build_stage
-          go build -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o build_stage/observeragent.exe
+          go build -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o build_stage/observeragent-legacy.exe
+
+      # ── Flujo MODERNO ───────────────────────────────────────────────────────
+      # Mismo árbol, otro compilador: cierra las 39 alcanzables de la stdlib sin
+      # tocar una sola dependencia, porque vienen del compilador y no de go.mod.
+      # ⚠️ NO subir a 1.27: exige macOS 13 Ventura y el repo no declara mínimo de
+      # macOS, así que recortaría la flota soportada en silencio (W-GOT-11).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
+      - name: Build modern agent binary (Go 1.26.5)
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o build_stage/observeragent-modern.exe
+
+      # T020, primera mitad: se mide el Go EMBEBIDO en cada binario, no el pin del
+      # workflow. La diferencia importa — el pin es lo que pedimos, el binario es
+      # lo que salió, y fue leyendo el binario publicado como se descubrió que la
+      # flota iba con 1.20.13. El fallo que vigila es mudo: si los dos `setup-go`
+      # se pisaran, el instalador compilaría igual y el release saldría verde.
+      - name: Verify the embedded Go of each binary (T020)
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            got="$(go version "$1" | awk '{print $NF}')"
+            if [ "$got" = "$2" ]; then
+              echo "OK   $1 -> $got"
+            else
+              echo "::error::$1 trae '$got' y se esperaba '$2'."
+              fail=1
+            fi
+          }
+          check build_stage/observeragent-legacy.exe go1.20.14
+          check build_stage/observeragent-modern.exe go1.26.5
+          exit $fail
 
       - name: Install Inno Setup
         shell: pwsh
@@ -207,6 +268,64 @@ jobs:
           $base = "observeragent-${{ github.ref_name }}-windows-${{ matrix.goarch }}"
           & $iscc "build\setup.iss" "/DAgentSrc=$src" "/DMyAppVersion=${{ steps.version.outputs.VERSION }}" "/O$out" "/F$base"
 
+      # T020, segunda mitad: verificar el binario que el instalador DEJA EN DISCO,
+      # extrayéndolo del instalador de verdad. Un `go version` sobre el .exe que se
+      # publica mide InnoSetup, no el agente — con dos binarios adentro esa trampa
+      # pasa de incómoda a peligrosa, porque el asset se ve idéntico se instale lo
+      # que se instale.
+      #
+      # Se instala con /DIR fuera de la ruta por defecto a propósito: el
+      # DeinitializeSetup de setup.iss registra y arranca el servicio contra esa
+      # ruta fija, así que instalando al lado la verificación no deja un agente
+      # instalado ni un servicio corriendo en el runner.
+      #
+      # 🔴 Sólo puede afirmar sobre la rama MODERNA: el runner es Windows 10+. La
+      # rama OnlyBelowVersion (Win7/8/8.1) no tiene runner en GitHub y sigue sin
+      # verificar en máquina real ⇒ T026 de la feature 029.
+      - name: Verify the installer ships the modern binary (T020)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = "installer_out\observeragent-${{ github.ref_name }}-windows-${{ matrix.goarch }}.exe"
+          $dest = 'C:\observer-verify'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$dest" "/LOG=$PWD\install-verify.log" | Out-Null
+
+          # El .exe de Inno se desprende de la consola, así que no basta con que
+          # el comando retorne: se espera al efecto en disco, no al exit code.
+          $placed  = Join-Path $dest 'observeragent.exe'
+          $deadline = (Get-Date).AddSeconds(90)
+          while (-not (Test-Path $placed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (-not (Test-Path $placed)) {
+            if (Test-Path install-verify.log) { Get-Content install-verify.log -Tail 40 | Write-Host }
+            throw "el instalador no dejo observeragent.exe en $dest"
+          }
+
+          $modern = (Get-FileHash build_stage\observeragent-modern.exe -Algorithm SHA256).Hash
+          $legacy = (Get-FileHash build_stage\observeragent-legacy.exe -Algorithm SHA256).Hash
+          $got    = (Get-FileHash $placed -Algorithm SHA256).Hash
+          Write-Host "sha256 moderno  : $modern"
+          Write-Host "sha256 legacy   : $legacy"
+          Write-Host "sha256 instalado: $got"
+
+          if ($got -eq $legacy) {
+            throw "el instalador dejo el binario LEGACY en un Windows 10+: el corte MinVersion 10.0 no esta discriminando."
+          }
+          if ($got -ne $modern) {
+            throw "el binario instalado no coincide con ninguno de los dos compilados."
+          }
+
+          $embedded = ((& go version $placed) -split ' ')[-1]
+          Write-Host "Go embebido del binario extraido: $embedded"
+          if ($embedded -ne 'go1.26.5') {
+            throw "el binario extraido del instalador trae '$embedded' y no go1.26.5."
+          }
+          Write-Host "OK - el instalador entrega el binario moderno, compilado con $embedded."
+
+      # W-GOT-10: se publica UN artefacto por arquitectura, con el nombre de
+      # siempre. Es lo que hace que `do_update` quede correcto sin tocar una línea
+      # de Python. El día que aparezca un asset con sufijo de variante (-legacy,
+      # -win7, -modern) revive la clase de falla del brick.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
