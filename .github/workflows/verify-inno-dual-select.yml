@@ -67,12 +67,6 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          # Del ejecutable, no del banner: el banner dice "Inno Setup 6
-          # Command-Line Compiler" y se queda igual entre versiones, que es
-          # exactamente el dato que no sirve para diagnosticar deriva.
-          $ver = (Get-Item $iscc).VersionInfo.FileVersion
-          "INNO_VERSION=$ver" | Tee-Object -Append runner-os.txt
 
       - name: Preparar los dos testigos
         shell: pwsh
@@ -93,8 +87,17 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           $src  = (Resolve-Path probe_src).Path
           $out  = (Resolve-Path probe_out).Path
-          & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/O$out" "/Fdualprobe"
-          if ($LASTEXITCODE -ne 0) { throw "ISCC falló en la sonda normal" }
+          $log = & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/O$out" "/Fdualprobe" 2>&1
+          if ($LASTEXITCODE -ne 0) { $log | Out-String | Write-Host; throw "ISCC falló en la sonda normal" }
+          $log | Out-String | Write-Host
+
+          # La version sale de aqui y no del ejecutable: ISCC.exe no lleva
+          # FileVersion (devuelve 0.0.0.0) y su banner es identico entre
+          # versiones. La linea "Compiler engine version:" es la unica fuente
+          # que distingue una version de otra, que es el punto de registrarla.
+          $m = $log | Select-String -Pattern 'Compiler engine version:\s*(.+)$'
+          $ver = if ($m) { $m.Matches[0].Groups[1].Value.Trim() } else { '<NO DETECTADA>' }
+          "INNO_VERSION=$ver" | Tee-Object -Append runner-os.txt
           & $iscc "build\probe-dual-select.iss" "/DSrc=$src" "/DFLIP=1" "/O$out" "/Fdualprobe-flip"
           if ($LASTEXITCODE -ne 0) { throw "ISCC falló en la sonda invertida" }
 
