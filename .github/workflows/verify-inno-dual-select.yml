@@ -19,15 +19,29 @@ name: Corte de versión del instalador Windows
 #
 # NO construye producto ni publica nada.
 #
-# ALCANCE ACTUAL: verifica la MECÁNICA con testigos de texto, no el setup.iss
-# real — la doble entrada de [Files] todavía no existe ahí (T017 de la feature
-# 029). Cuando T017 aterrice, este workflow debe pasar a afirmar también sobre
-# `build/setup.iss`, no sólo sobre la sonda.
+# ALCANCE (actualizado al aterrizar T017, 2026-08-02). Tres jobs, y cada uno
+# responde algo que los otros dos no pueden:
+#
+#   1. `probe`          — ¿la MECÁNICA de InnoSetup discrimina por versión?
+#                         Es el único que puede INVERTIR las condiciones, porque
+#                         compila una sonda aparte. Sobre el setup.iss real no se
+#                         puede: no hay control invertido de un archivo de producto.
+#   2. `real-setup-iss` — ¿el setup.iss REAL, el que se publica, elige bien?
+#                         Con testigos de texto en vez de binarios: acá se mide la
+#                         selección, no el agente. Evita además que el instalador
+#                         registre un servicio en el runner.
+#   3. `estructura`     — ¿las dos entradas siguen redactadas como deben?
+#                         Barato, sin runner Windows, y caza el modo de falla que
+#                         ninguna corrida detecta: que las dos entradas dejen de
+#                         compartir DestName, o que una condición desaparezca.
 #
 # LO QUE NO PUEDE RESPONDER: el comportamiento en Windows 7/8/8.1. GitHub no
 # ofrece runners de esas versiones, así que la rama OnlyBelowVersion queda
 # probada sólo por inversión lógica. Esa mitad sigue 🔴 y exige máquina real
 # (T026).
+#
+# Tampoco responde con qué Go se compiló cada binario: eso vive en el
+# `release.yml`, donde los binarios existen de verdad (T020).
 
 on:
   workflow_dispatch:
@@ -180,3 +194,134 @@ jobs:
             selected-normal.txt
             selected-flip.txt
           retention-days: 7
+
+  # El instalador de PRODUCTO, no la sonda. Compila `build/setup.iss` tal cual se
+  # publica y comprueba que en un Windows moderno deja en disco el binario
+  # moderno. Es lo que cierra la brecha que este workflow arrastraba: hasta T017,
+  # el mecanismo estaba verificado en un archivo que no era el que se envía.
+  #
+  # Los "binarios" son testigos de texto A PROPÓSITO, por dos razones:
+  #   - lo que se mide acá es la SELECCIÓN, y para eso un archivo distinguible
+  #     alcanza; el toolchain de cada binario se mide en el release.yml (T020);
+  #   - con testigos, el `-m installsvc` del DeinitializeSetup no tiene nada que
+  #     registrar, así que este job no deja un servicio dando vueltas en el runner.
+  #     (Igual se instala con /DIR fuera de la ruta por defecto, que es la que ese
+  #     código tiene fija.)
+  real-setup-iss:
+    name: El setup.iss real elige el binario moderno
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Preparar los dos testigos con el nombre real
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'stage_real'
+          New-Item -ItemType Directory -Force -Path $src, (Join-Path $PWD 'out_real') | Out-Null
+          # Los nombres son los que espera build/setup.iss. Si alguien los cambia
+          # ahí sin cambiarlos acá, ISCC falla en compilación: es intencional.
+          [System.IO.File]::WriteAllText((Join-Path $src 'observeragent-modern.exe'), 'MODERN')
+          [System.IO.File]::WriteAllText((Join-Path $src 'observeragent-legacy.exe'), 'LEGACY')
+
+      - name: Compilar el instalador real
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $src  = (Resolve-Path stage_real).Path
+          $out  = (Resolve-Path out_real).Path
+          & $iscc "build\setup.iss" "/DAgentSrc=$src" "/DMyAppVersion=0.0.0" "/O$out" "/Frealprobe"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC fallo compilando build/setup.iss" }
+
+      - name: Instalar y leer el veredicto del disco
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = 'C:\observer-real-check'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          & .\out_real\realprobe.exe /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$dest" "/LOG=$PWD\log-real.txt" | Out-Null
+
+          # Se espera al efecto en disco, no al exit code: el .exe de Inno se
+          # desprende de la consola y puede retornar antes de terminar.
+          $placed   = Join-Path $dest 'observeragent.exe'
+          $deadline = (Get-Date).AddSeconds(60)
+          while (-not (Test-Path $placed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+
+          $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+          # El veredicto se lee del DISCO, nunca del log: Inno registra también los
+          # archivos que DESCARTA por condicion de version, asi que un grep sobre el
+          # log da un falso positivo garantizado.
+          $pick = if (Test-Path $placed) { (Get-Content -Raw $placed).Trim() } else { '<NADA INSTALADO>' }
+
+          Write-Host "=============== VEREDICTO (setup.iss real) ==============="
+          Write-Host "Build real del runner : $realBuild"
+          Write-Host "DestName en disco     : $placed"
+          Write-Host "Contenido instalado   : $pick"
+          Write-Host "=========================================================="
+
+          if ($realBuild -lt 10240) {
+            Write-Host "::warning::runner con build $realBuild (<10240): este job asume Windows 10+."
+            exit 0
+          }
+          if ($pick -eq 'LEGACY') {
+            throw "el setup.iss real dejo el binario LEGACY en un Windows $realBuild. El corte MinVersion: 10.0 no esta discriminando: toda la flota moderna recibiria un agente sin parches de Go desde 2023, y el instalador terminaria en exito."
+          }
+          if ($pick -ne 'MODERN') {
+            throw "el setup.iss real no dejo ningun binario en disco ($pick)."
+          }
+          Write-Host "OK - el instalador de producto entrega el binario moderno en Windows $realBuild."
+
+      - name: Guardar evidencia
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-setup-iss-evidence
+          path: log-real.txt
+          retention-days: 7
+
+  # Afirma sobre la REDACCIÓN de las dos entradas, no sobre una corrida. Existe
+  # porque los modos de falla de esta pieza son mudos en tiempo de ejecución
+  # sobre un runner moderno: si las dos entradas dejan de compartir DestName, el
+  # equipo termina con dos ejecutables y un servicio apuntando al que no es; si
+  # se cae la línea legacy, Win7 deja de recibir binario y nadie lo nota desde
+  # acá, porque no hay runner Win7 que falle.
+  estructura:
+    name: Las dos entradas de [Files] siguen bien redactadas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar build/setup.iss
+        run: |
+          set -uo pipefail
+          iss=build/setup.iss
+          fail=0
+          assert() {
+            if [ "$1" = "ok" ]; then echo "OK   $2"; else echo "::error::$2"; fail=1; fi
+          }
+
+          n=$(grep -c '^Source:' "$iss")
+          [ "$n" -eq 2 ] && r=ok || r=no
+          assert "$r" "[Files] tiene exactamente 2 entradas Source (encontradas: $n)."
+
+          n=$(grep '^Source:' "$iss" | grep -c 'DestName: "{#MyAppExeName}"')
+          [ "$n" -eq 2 ] && r=ok || r=no
+          assert "$r" "las 2 entradas comparten DestName (encontradas: $n). Sin DestName comun el equipo termina con dos ejecutables."
+
+          grep '^Source:' "$iss" | grep -F 'observeragent-modern.exe' | grep -q 'MinVersion: 10\.0' && r=ok || r=no
+          assert "$r" "el binario moderno esta condicionado con MinVersion: 10.0."
+
+          grep '^Source:' "$iss" | grep -F 'observeragent-legacy.exe' | grep -q 'OnlyBelowVersion: 10\.0' && r=ok || r=no
+          assert "$r" "el binario legacy esta condicionado con OnlyBelowVersion: 10.0."
+
+          # El piso del instalador NO es el corte. Si alguien lo confunde y lo sube
+          # a 10.0, Win7 deja de poder instalar y la rama legacy queda muerta.
+          grep -q '^MinVersion=6\.1$' "$iss" && r=ok || r=no
+          assert "$r" "[Setup] conserva el piso global MinVersion=6.1 (Win7 SP1)."
+
+          exit $fail

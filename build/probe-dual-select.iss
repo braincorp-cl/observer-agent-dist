@@ -4,9 +4,12 @@
 ; .github/workflows/verify-inno-dual-select.yml; ver ahí por qué es permanente
 ; y no una verificación de una vez.
 ;
-; ⚠️ Mientras la doble entrada de [Files] no exista en build/setup.iss (T017 de
-; la feature 029), esta sonda es lo ÚNICO que ejerce el mecanismo. No borrarla
-; "porque el instalador real ya lo hace": todavía no lo hace.
+; ⚠️ NO borrar "porque el instalador real ya lo hace". Desde T017 (2026-08-02) el
+; setup.iss real SÍ lleva la doble entrada y el workflow lo ejerce en el job
+; `real-setup-iss`, pero esta sonda sigue siendo lo ÚNICO que puede responder P2:
+; el control invertido exige compilar las condiciones cruzadas, y eso no se le
+; hace a un archivo de producto. Sin ella, "el instalador dejó el archivo
+; correcto" queda sin distinguir de "el instalador dejó el primero de la lista".
 ;
 ; Responde dos preguntas que gatean la enmienda propuesta al ADR-023:
 ;
