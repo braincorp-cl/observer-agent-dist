@@ -26,8 +26,6 @@ import (
 	psHost "github.com/shirou/gopsutil/v3/host"
 	nats "github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 )
 
 func ShowStatus(version string) {
@@ -121,7 +119,7 @@ func (a *Agent) osString() string {
 	if err != nil {
 		return "error getting host info"
 	}
-	plat := cases.Title(language.AmericanEnglish).String(h.Platform)
+	plat := titleCasePlatform(h.Platform)
 	return fmt.Sprintf("%s %s %s %s", plat, h.PlatformVersion, h.KernelArch, h.KernelVersion)
 }
 
