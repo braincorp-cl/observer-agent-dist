@@ -17,5 +17,16 @@ observeragent-v*
 .agents/
 .claude/
 CLAUDE.md
+AGENTS.md
 _reversa_sdd/
 _reversa_forward/
+
+# Editores e IDEs. `.vscode/settings.json` venia de upstream (wh1te909,
+# 2024-03-24) y estaba versionado; se saco del indice porque un clone de este
+# repo debe traer el agente y nada mas. Si algun backport futuro de upstream
+# toca ese archivo saldra un conflicto "modificado alla / borrado aca": se
+# resuelve descartandolo.
+.vscode/
+.idea/
+*.swp
+.DS_Store
