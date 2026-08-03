@@ -303,7 +303,7 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 	cwd := filepath.Dir(self)
 	// create a tmpfile in same location as current binary
 	// avoids issues with /tmp dir and other fs mount issues
-	f, err := os.CreateTemp(cwd, "trmm")
+	f, err := os.CreateTemp(cwd, "ormm")
 	if err != nil {
 		a.Logger.Errorln("AgentUpdate() os.CreateTemp:", err)
 		return err

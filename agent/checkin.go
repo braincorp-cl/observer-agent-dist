@@ -6,7 +6,7 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/ugorji/go/codec"
-	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
+	ormm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
@@ -16,12 +16,12 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 
 	switch mode {
 	case "agent-hello":
-		payload = trmm.CheckInNats{
+		payload = ormm.CheckInNats{
 			Agentid: a.AgentID,
 			Version: a.Version,
 		}
 	case "agent-winsvc":
-		payload = trmm.WinSvcNats{
+		payload = ormm.WinSvcNats{
 			Agentid: a.AgentID,
 			WinSvcs: a.GetServices(),
 		}
@@ -31,7 +31,7 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 		if err != nil {
 			reboot = false
 		}
-		payload = trmm.AgentInfoNats{
+		payload = ormm.AgentInfoNats{
 			Agentid:      a.AgentID,
 			Username:     a.LoggedOnUser(),
 			Hostname:     a.Hostname,
@@ -43,17 +43,17 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			GoArch:       a.GoArch,
 		}
 	case "agent-wmi":
-		payload = trmm.WinWMINats{
+		payload = ormm.WinWMINats{
 			Agentid: a.AgentID,
 			WMI:     a.GetWMIInfo(),
 		}
 	case "agent-disks":
-		payload = trmm.WinDisksNats{
+		payload = ormm.WinDisksNats{
 			Agentid: a.AgentID,
 			Disks:   a.GetDisks(),
 		}
 	case "agent-publicip":
-		payload = trmm.PublicIPNats{
+		payload = ormm.PublicIPNats{
 			Agentid:  a.AgentID,
 			PublicIP: a.PublicIP(),
 		}
@@ -66,7 +66,7 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			a.Logger.Debugln("geo: sin fix, no se publica")
 			return
 		}
-		payload = trmm.GeoNats{
+		payload = ormm.GeoNats{
 			Func:       "geo",
 			Agentid:    a.AgentID,
 			Version:    a.Version,

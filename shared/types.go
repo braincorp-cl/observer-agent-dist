@@ -952,7 +952,7 @@ type Win32_VideoController struct {
 	VideoProcessor            string
 }
 
-// --- Tipos inlineados desde github.com/wh1te909/trmm-shared ---
+// --- Tipos inlineados desde github.com/wh1te909/ormm-shared ---
 
 type CheckInNats struct {
 	Agentid string `json:"agent_id"`

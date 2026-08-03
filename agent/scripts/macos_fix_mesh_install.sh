@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
-# source: https://github.com/amidaware/community-scripts/blob/main/scripts_staging/macos_fix_mesh_install.sh
+# Adaptado de un script publico de la comunidad RMM.
+#
+# La ruta del mesh se corrigio a /opt/observermesh el 2026-08-03: venia con la
+# del producto de origen, que en nuestros equipos NO existe, asi que el `stat`
+# fallaba y el chmod de esta rutina nunca llegaba a ejecutarse (el rename del
+# plist si, porque no depende del directorio).
 # author: https://github.com/NiceGuyIT
 
 # This script fixes MeshAgent issue #161: MacOS Ventura - Not starting meshagent on boot (Maybe Solved)
@@ -24,12 +29,12 @@
 #      <string>meshagent</string>
 #      <key>ProgramArguments</key>
 #      <array>
-#          <string>/opt/tacticalmesh/meshagent</string>
+#          <string>/opt/observermesh/meshagent</string>
 #          <string>-kvm1</string>
 #      </array>
 #
 #       <key>WorkingDirectory</key>
-#      <string>/opt/tacticalmesh</string>
+#      <string>/opt/observermesh</string>
 #
 #       <key>RunAtLoad</key>
 # <true/>
@@ -46,7 +51,7 @@
 # </plist>
 
 
-mesh_install_dir="/opt/tacticalmesh/"
+mesh_install_dir="/opt/observermesh/"
 mesh_agent_plist_old="/Library/LaunchAgents/meshagent.plist"
 mesh_agent_plist="/Library/LaunchAgents/meshagent-agent.plist"
 mesh_daemon_plist="/Library/LaunchDaemons/meshagent.plist"

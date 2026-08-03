@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
+	ormm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
 func (a *Agent) installerMsg(msg, alert string, silent bool) {
@@ -47,7 +47,7 @@ func createAgentConfig(baseurl, agentid, apiurl, token, agentpk, cert, proxy, me
 
 func (a *Agent) checkExistingAndRemove(silent bool) {
 	if runtime.GOOS == "darwin" {
-		if trmm.FileExists(a.MeshSystemEXE) {
+		if ormm.FileExists(a.MeshSystemEXE) {
 			a.Logger.Infoln("Existing meshagent found, attempting to remove...")
 			uopts := a.NewCMDOpts()
 			// `--no-embedded=1` va DESPUÉS del comando, igual que en los scripts
@@ -63,7 +63,7 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 			time.Sleep(1 * time.Second)
 		}
 
-		if trmm.FileExists(macPlistPath) {
+		if ormm.FileExists(macPlistPath) {
 			a.Logger.Infoln("Existing observeragent plist found, attempting to remove...")
 			opts := a.NewCMDOpts()
 			opts.Command = fmt.Sprintf("launchctl bootout system %s", macPlistPath)

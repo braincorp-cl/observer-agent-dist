@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
+	ormm "github.com/braincorp-cl/observer-agent-dist/shared"
 	"github.com/go-resty/resty/v2"
 )
 
@@ -158,7 +158,7 @@ func (a *Agent) Install(i *Installer) {
 
 	// set local cert if applicable
 	if len(i.Cert) > 0 {
-		if !trmm.FileExists(i.Cert) {
+		if !ormm.FileExists(i.Cert) {
 			a.installerMsg(fmt.Sprintf("%s does not exist", i.Cert), "error", i.Silent)
 		}
 		rClient.SetRootCertificate(i.Cert)

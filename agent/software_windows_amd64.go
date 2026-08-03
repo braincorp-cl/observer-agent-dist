@@ -4,11 +4,11 @@ import (
 	"fmt"
 
 	wapi "github.com/iamacarpet/go-win64api"
-	trmm "github.com/braincorp-cl/observer-agent-dist/shared"
+	ormm "github.com/braincorp-cl/observer-agent-dist/shared"
 )
 
-func (a *Agent) GetInstalledSoftware() []trmm.WinSoftwareList {
-	ret := make([]trmm.WinSoftwareList, 0)
+func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
+	ret := make([]ormm.WinSoftwareList, 0)
 
 	sw, err := wapi.InstalledSoftwareList()
 	if err != nil {
@@ -17,7 +17,7 @@ func (a *Agent) GetInstalledSoftware() []trmm.WinSoftwareList {
 
 	for _, s := range sw {
 		t := s.InstallDate
-		ret = append(ret, trmm.WinSoftwareList{
+		ret = append(ret, ormm.WinSoftwareList{
 			Name:        CleanString(s.Name()),
 			Version:     CleanString(s.Version()),
 			Publisher:   CleanString(s.Publisher),

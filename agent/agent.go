@@ -155,7 +155,7 @@ func New(logger *logrus.Logger, version string) *Agent {
 
 	ac := NewAgentConfig()
 
-	agentHeader := fmt.Sprintf("trmm/%s/%s/%s", version, runtime.GOOS, runtime.GOARCH)
+	agentHeader := fmt.Sprintf("ormm/%s/%s/%s", version, runtime.GOOS, runtime.GOARCH)
 	headers := make(map[string]string)
 	if len(ac.Token) > 0 {
 		headers["Content-Type"] = "application/json"

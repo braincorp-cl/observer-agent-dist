@@ -9,6 +9,51 @@ on:
       - "*"
 
 jobs:
+  no-legacy:
+    runs-on: ubuntu-latest
+    name: Block legacy upstream strings
+    # Gate de rebrand, agregado el 2026-08-03. Este repo no tenia ninguno: la
+    # limpieza de referencias al producto de origen se hizo a mano y sin gate
+    # vuelve a entrar sola en el proximo backport desde upstream.
+    #
+    # Espejo del gate de observer-rmm-dist. Tres familias: el producto legacy
+    # ('tactical' como token + formas pegadas), el proveedor ('amidaware') y el
+    # prefijo 'trmm' (migrado a 'ormm': alias de import, header del agente,
+    # prefijos de temporales).
+    #
+    # Exclusion de linea IRREDUCIBLE, y no es branding: 'amidaware/taskmaster'
+    # es un MODULO GO DE UN TERCERO (bindings del Task Scheduler de Windows) del
+    # que depende agent/tasks_windows.go. No se puede renombrar —es el paquete
+    # de otro— y tocarlo rompe el build e invalida los hashes de go.sum.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for legacy strings
+        run: |
+          set -uo pipefail
+
+          PATTERN='tacticalrmm|tacticalagent|tacticalmesh|tactical([^a-z]|$)|amidaware|trmm'
+
+          HITS=$(grep -rniE "$PATTERN" . \
+            --exclude-dir=.git \
+            --exclude-dir=vendor \
+            --exclude=CHANGELOG.md \
+            | grep -vE '^\.?/?\.github/workflows/ci\.yml:' \
+            | grep -vE 'amidaware/taskmaster' \
+            || true)
+
+          # Los NOMBRES de archivo tambien cuentan: `grep -r` mira contenidos.
+          PATHS=$(git ls-files | grep -iE "$PATTERN" || true)
+
+          if [ -n "$HITS" ] || [ -n "$PATHS" ]; then
+            echo "::error::Legacy upstream strings detected outside the documented allowlist."
+            if [ -n "$HITS" ]; then echo ""; echo "Hits (contenido):"; echo "$HITS"; fi
+            if [ -n "$PATHS" ]; then echo ""; echo "Hits (nombre de archivo):"; echo "$PATHS"; fi
+            exit 1
+          fi
+
+          echo "::notice::No new legacy upstream strings detected."
+
   build:
     runs-on: ubuntu-latest
     name: Run tests (Go ${{ matrix.go-version }})
