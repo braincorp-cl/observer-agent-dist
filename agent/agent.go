@@ -562,7 +562,14 @@ func (a *Agent) ReinstallMesh() {
 		a.Logger.Errorln("ReinstallMesh() status code:", r.StatusCode())
 		return
 	}
-	_, err = CMD(meshOutput, []string{"-fulluninstall"}, 30, false)
+	// `--no-embedded=1` va DESPUÉS del comando y acá es especialmente
+	// necesario: `meshOutput` es el instalador que ACABAMOS de bajar del
+	// servidor, o sea el auto-instalador puro, el que sí trae el script JS
+	// anexado. Ese script se dispara ante CUALQUIER argumento, también ante
+	// `-fulluninstall`, y en vez de desinstalar se pone a instalar. Sin la
+	// bandera, la auto-reparación puede terminar haciendo lo contrario de lo
+	// que pretende.
+	_, err = CMD(meshOutput, []string{"-fulluninstall", "--no-embedded=1"}, 30, false)
 	if err != nil {
 		a.Logger.Errorln("ReinstallMesh() uninstall:", err)
 	}

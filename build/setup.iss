@@ -87,7 +87,12 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "-m cleanup"; RunOnceId: "cleanuprm";
 Filename: "{cmd}"; Parameters: "/c taskkill /F /IM observeragent.exe"; RunOnceId: "killobsagent";
-Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall"; RunOnceId: "meshrm";
+; `--no-embedded=1` va DESPUÉS del comando. El binario que MeshCentral entrega
+; para instalar trae un instalador JS anexado que se dispara ante CUALQUIER
+; argumento, también ante `-fulluninstall`: medido en Linux (HP-ProOne-400,
+; 2026-07-29) abre un diálogo en el escritorio y se cuelga esperando un clic.
+; Acá eso dejaría el nodo Mesh vivo en el servidor después de desinstalar.
+Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunOnceId: "meshrm";
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}";

@@ -716,6 +716,20 @@ func (a *Agent) SendSoftware() {
 }
 
 func (a *Agent) UninstallCleanup() {
+	// PRIMERO el aviso al servidor, antes de borrar nada.
+	//
+	// Ésta es la única ruta que Windows tiene para enterarse: no hay script de
+	// desinstalación, el `[UninstallRun]` del instalador invoca
+	// `observeragent.exe -m cleanup` y de ahí sale esto. Si no avisamos acá, la
+	// desinstalación local queda invisible para la consola y el equipo se queda
+	// para siempre como un agente Offline que ya no existe.
+	//
+	// El orden no es decorativo: la línea de abajo borra la clave del registro
+	// donde viven la URL y el token. El cliente HTTP ya está construido en
+	// memoria y sobreviviría, pero dejar el aviso después del borrado es una
+	// trampa esperando a que alguien reordene estas líneas.
+	a.NotifyUninstall(uninstallSource())
+
 	registry.DeleteKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`)
 	a.PatchMgmnt(false)
 	a.CleanupAgentUpdates()

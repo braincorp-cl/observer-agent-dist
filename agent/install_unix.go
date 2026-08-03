@@ -50,7 +50,14 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 		if trmm.FileExists(a.MeshSystemEXE) {
 			a.Logger.Infoln("Existing meshagent found, attempting to remove...")
 			uopts := a.NewCMDOpts()
-			uopts.Command = fmt.Sprintf("%s -fulluninstall", a.MeshSystemEXE)
+			// `--no-embedded=1` va DESPUÉS del comando, igual que en los scripts
+			// del backend. El binario que MeshCentral entrega para instalar trae
+			// un instalador JS anexado que se dispara ante CUALQUIER argumento,
+			// también ante `-fulluninstall`: medido en Linux (HP-ProOne-400,
+			// 2026-07-29) abre un diálogo en el escritorio y se queda esperando
+			// un clic que nadie va a dar. Acá eso colgaría la INSTALACIÓN, que
+			// es lo que esta limpieza previa está habilitando.
+			uopts.Command = fmt.Sprintf("%s -fulluninstall --no-embedded=1", a.MeshSystemEXE)
 			uout := a.CmdV2(uopts)
 			fmt.Println(uout.Stdout)
 			time.Sleep(1 * time.Second)
