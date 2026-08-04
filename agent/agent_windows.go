@@ -129,6 +129,22 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 	}
 	defer os.Remove(tmpfn.Name())
 
+	// PowerShell 5.1 lee un .ps1 SIN BOM usando la pagina ANSI del sistema, no UTF-8.
+	// Los scripts de la biblioteca ya traen BOM propio y sobreviven, pero un script
+	// escrito por el operador en la consola web no lo lleva: sus acentos llegan
+	// corrompidos ANTES de ejecutarse, dentro de los literales del propio codigo. El
+	// BOM es la unica marca que PowerShell 5.1 respeta para leer el archivo como
+	// UTF-8, y PowerShell 7 tambien lo acepta.
+	//
+	// Solo para .ps1. En un .bat el BOM lo imprime cmd como texto, y Python 3 ya lee
+	// sus fuentes como UTF-8 sin necesitarlo.
+	if shell == "powershell" && !bytes.HasPrefix(content, utf8BOM) {
+		if _, err := tmpfn.Write(utf8BOM); err != nil {
+			a.Logger.Errorln(err)
+			return "", err.Error(), 85, err
+		}
+	}
+
 	if _, err := tmpfn.Write(content); err != nil {
 		a.Logger.Errorln(err)
 		return "", err.Error(), 85, err
@@ -261,13 +277,13 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 	cmdErr := cmd.Wait()
 
 	if timedOut {
-		stdout = CleanString(outb.String())
-		stderr = fmt.Sprintf("%s\nScript timed out after %d seconds", CleanString(errb.String()), timeout)
+		stdout = DecodeCmdOutput(outb.Bytes())
+		stderr = fmt.Sprintf("%s\nScript timed out after %d seconds", DecodeCmdOutput(errb.Bytes()), timeout)
 		exitcode = 98
 		a.Logger.Debugln("Script check timeout:", ctx.Err())
 	} else {
-		stdout = CleanString(outb.String())
-		stderr = CleanString(errb.String())
+		stdout = DecodeCmdOutput(outb.Bytes())
+		stderr = DecodeCmdOutput(errb.Bytes())
 
 		// get the exit code
 		if cmdErr != nil {
@@ -313,14 +329,14 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	cmd.Stderr = &errb
 	err := cmd.Run()
 	if err != nil {
-		return [2]string{"", ""}, fmt.Errorf("%s: %s", err, CleanString(errb.String()))
+		return [2]string{"", ""}, fmt.Errorf("%s: %s", err, DecodeCmdOutput(errb.Bytes()))
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {
 		return [2]string{"", ""}, ctx.Err()
 	}
 
-	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
+	return [2]string{DecodeCmdOutput(outb.Bytes()), DecodeCmdOutput(errb.Bytes())}, nil
 }
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
@@ -399,7 +415,7 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 		if stderrWriter != nil {
 			stderrWriter.Close()
 		}
-		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
+		return [2]string{DecodeCmdOutput(outb.Bytes()), DecodeCmdOutput(errb.Bytes())}, err
 	}
 
 	pid := int32(cmd.Process.Pid)
@@ -424,24 +440,27 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	}
 
 	if timedOut {
-		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
+		return [2]string{DecodeCmdOutput(outb.Bytes()), DecodeCmdOutput(errb.Bytes())}, ctx.Err()
 	}
 
 	if err != nil {
-		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
+		return [2]string{DecodeCmdOutput(outb.Bytes()), DecodeCmdOutput(errb.Bytes())}, err
 	}
 
-	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
+	return [2]string{DecodeCmdOutput(outb.Bytes()), DecodeCmdOutput(errb.Bytes())}, nil
 }
 
 func streamLines(pipe io.ReadCloser, agentID string, cmdID string, nc *nats.Conn) {
 	scanner := bufio.NewScanner(pipe)
 	subject := agentID + ".cmdoutput." + cmdID
 	for scanner.Scan() {
-		line := scanner.Text()
+		// Bytes() y no Text(): la linea hay que decodificarla desde la pagina de
+		// codigos de la consola, y Text() ya la convirtio a string dando por sentado
+		// que era UTF-8.
+		line := DecodeCmdOutput(scanner.Bytes())
 		var resp []byte
 		ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
-		_ = ret.Encode(CleanString(line))
+		_ = ret.Encode(line)
 		_ = nc.Publish(subject, resp)
 	}
 	// Send final 'done' message

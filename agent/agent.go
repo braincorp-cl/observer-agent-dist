@@ -423,8 +423,8 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		finalStatus.Exit = 98
 		ret := CmdStatus{
 			Status: finalStatus,
-			Stdout: CleanString(stdoutBuf.String()),
-			Stderr: fmt.Sprintf("%s\nTimed out after %d seconds", CleanString(stderrBuf.String()), c.Timeout),
+			Stdout: DecodeCmdOutput(stdoutBuf.Bytes()),
+			Stderr: fmt.Sprintf("%s\nTimed out after %d seconds", DecodeCmdOutput(stderrBuf.Bytes()), c.Timeout),
 		}
 		a.Logger.Debugf("%+v\n", ret)
 		return ret
@@ -437,8 +437,8 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 
 	ret := CmdStatus{
 		Status: finalStatus,
-		Stdout: CleanString(stdoutBuf.String()),
-		Stderr: CleanString(stderrBuf.String()),
+		Stdout: DecodeCmdOutput(stdoutBuf.Bytes()),
+		Stderr: DecodeCmdOutput(stderrBuf.Bytes()),
 	}
 	a.Logger.Debugf("%+v\n", ret)
 
