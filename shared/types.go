@@ -952,7 +952,14 @@ type Win32_VideoController struct {
 	VideoProcessor            string
 }
 
-// --- Tipos inlineados desde github.com/wh1te909/ormm-shared ---
+// --- Tipos inlineados desde github.com/wh1te909/trmm-shared ---
+//
+// Atribucion de procedencia, NO branding: es el repo de un tercero del que se
+// copiaron estos tipos cuando se elimino la dependencia externa. El nombre se
+// deja tal cual porque renombrarlo fabrica una cita falsa: el rebrand de
+// prefijos del producto legacy le habia aplicado el sed a este repo ajeno y lo
+// dejo apuntando a `wh1te909/ormm-shared`, que no existe (404). Corregido el
+// 2026-08-05. El gate de ci.yml permite esta linea explicitamente.
 
 type CheckInNats struct {
 	Agentid string `json:"agent_id"`

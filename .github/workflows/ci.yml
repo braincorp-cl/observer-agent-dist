@@ -21,10 +21,18 @@ jobs:
     # prefijo 'trmm' (migrado a 'ormm': alias de import, header del agente,
     # prefijos de temporales).
     #
-    # Exclusion de linea IRREDUCIBLE, y no es branding: 'amidaware/taskmaster'
-    # es un MODULO GO DE UN TERCERO (bindings del Task Scheduler de Windows) del
-    # que depende agent/tasks_windows.go. No se puede renombrar —es el paquete
-    # de otro— y tocarlo rompe el build e invalida los hashes de go.sum.
+    # Exclusiones de linea IRREDUCIBLES, y ninguna es branding. Las dos nombran
+    # repositorios DE TERCEROS, que no nos toca renombrar:
+    #
+    #   1. 'amidaware/taskmaster' es un MODULO GO (bindings del Task Scheduler de
+    #      Windows) del que depende agent/tasks_windows.go. No se puede renombrar
+    #      —es el paquete de otro— y tocarlo rompe el build e invalida go.sum.
+    #
+    #   2. 'wh1te909/trmm-shared' aparece en shared/types.go como ATRIBUCION del
+    #      origen de los tipos inlineados. Se agrego el 2026-08-05 tras descubrir
+    #      que el rebrand automatico trmm->ormm le habia aplicado el sed al nombre
+    #      del repo ajeno, dejando `wh1te909/ormm-shared` — que da 404. Renombrar
+    #      la cita de un tercero no limpia nada: fabrica una referencia falsa.
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +48,7 @@ jobs:
             --exclude=CHANGELOG.md \
             | grep -vE '^\.?/?\.github/workflows/ci\.yml:' \
             | grep -vE 'amidaware/taskmaster' \
+            | grep -vE 'wh1te909/trmm-shared' \
             || true)
 
           # Los NOMBRES de archivo tambien cuentan: `grep -r` mira contenidos.
