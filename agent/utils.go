@@ -314,7 +314,7 @@ func ShowVersionInfo(ver string) {
 	fmt.Println("Observer RMM Agent:", ver)
 	fmt.Println("Arch:", runtime.GOARCH)
 	if runtime.GOOS == "windows" {
-		fmt.Println("Program Directory:", filepath.Join(os.Getenv("ProgramFiles"), progFilesName))
+		fmt.Println("Program Directory:", ResolveProgramDir())
 	}
 	bi, ok := goDebug.ReadBuildInfo()
 	if ok {

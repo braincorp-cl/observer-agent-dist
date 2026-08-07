@@ -97,6 +97,12 @@ Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunO
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}";
 Type: filesandordirs; Name: "{#MESHDIR}";
+; El Mesh Agent de 32 bits se instala solo, en la vista de 32 bits: sobre un
+; Windows x64 eso es "C:\Program Files (x86)\Mesh Agent", que la línea de arriba
+; no toca. En un Windows de 32 bits genuino {commonpf32} vale lo mismo que
+; {#MESHDIR} y esta línea no hace nada. Sobra una de las dos siempre; ninguna
+; molesta, y la que sobra no existe en disco.
+Type: filesandordirs; Name: "{commonpf32}\Mesh Agent";
 
 [Code]
 function InitializeSetup(): boolean;
@@ -118,7 +124,13 @@ var
   WorkingDir:   String;
 begin
 
-  WorkingDir := ExpandConstant('{sd}\Program Files\ObserverAgent');
+  // {app} y NO el literal '{sd}\Program Files\ObserverAgent'. El agente resuelve
+  // su directorio de instalación a partir del ejecutable que corre, así que este
+  // WorkingDir es lo que le dice dónde quedó instalado. Con el literal, un
+  // instalador de 32 bits sobre x64 le mentía: el usuario puede haber elegido
+  // otro directorio, y en una actualización manda el directorio previo
+  // (UsePreviousAppDir), no este valor.
+  WorkingDir := ExpandConstant('{app}');
   Exec('cmd.exe', ' /c observeragent.exe -m installsvc', WorkingDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log('install service: ' + IntToStr(ResultCode));
 

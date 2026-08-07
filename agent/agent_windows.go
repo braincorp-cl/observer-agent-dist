@@ -1347,9 +1347,30 @@ func (a *Agent) Stop(_ service.Service) error {
 	return nil
 }
 
+// InstallService registra el servicio y, si ya existía, lo reconcilia con la
+// ubicación real del agente.
+//
+// Inno Setup invoca `observeragent.exe -m installsvc` desde `{app}` en
+// DeinitializeSetup, o sea después de haber dejado el binario nuevo en disco: el
+// binario que ejecuta esta función es el nuevo. Ése es el único punto del flujo
+// de actualización donde alguien sabe, sin adivinar, dónde quedó instalado el
+// agente.
+//
+// Antes esta función retornaba nil apenas el servicio existía, y ahí se perdía
+// la actualización en 386 sobre x64: el binario nuevo quedaba en `{app}` y el
+// servicio seguía ejecutando el viejo desde `%ProgramFiles%` = `(x86)`. La
+// versión reportada nunca cambiaba, así que el servidor volvía a mandar el mismo
+// update en el siguiente check-in, y en el siguiente, para siempre.
 func (a *Agent) InstallService() error {
+	// Deja grabada la ubicación real. No crea la clave: si todavía no existe,
+	// esto es la primera pasada de Inno Setup sobre una instalación nueva y
+	// `-m install` la grabará en cuanto configure al agente.
+	if err := writeInstallDir(a.ProgramDir); err != nil {
+		a.Logger.Debugln("InstallService() writeInstallDir:", err)
+	}
+
 	if serviceExists(winSvcName) {
-		return nil
+		return a.reconcileServiceExe()
 	}
 
 	// skip on first call of inno setup if this is a new install

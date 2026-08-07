@@ -329,6 +329,14 @@ func (a *Agent) Install(i *Installer) {
 	}
 
 	if runtime.GOOS == "windows" {
+		// Deja grabado dónde quedó instalado el agente, para los procesos que no
+		// corren desde el directorio de instalación (check-in, taskrunner,
+		// scripts, diagnóstico). La clave ya existe: la creó createAgentConfig
+		// unas líneas más arriba.
+		if err := writeInstallDir(a.ProgramDir); err != nil {
+			a.Logger.Debugln("Install() writeInstallDir:", err)
+		}
+
 		os.MkdirAll(filepath.Join(a.ProgramDir, "bin"), 0755)
 
 		// When installed from the raw release binary (PowerShell/manual method)

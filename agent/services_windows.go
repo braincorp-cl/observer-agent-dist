@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
@@ -236,6 +239,83 @@ func WaitForService(name string, status string, retries int) {
 		if attempts == 0 || attempts >= retries {
 			break
 		}
+	}
+}
+
+// reconcileServiceExe reapunta el servicio al binario que el agente tiene por
+// suyo, cuando el registrado es otro.
+//
+// Es la reparación de los equipos que ya quedaron con las dos rutas divergidas:
+// el servicio ejecutando `C:\Program Files (x86)\ObserverAgent` mientras el
+// instalador escribe en `C:\Program Files\ObserverAgent`. Corre dentro de la
+// actualización normal, con el servicio ya detenido por InitializeSetup, así que
+// esos equipos se sanan con un solo salto de versión y sin reinstalar a mano.
+//
+// En una instalación sana no hace nada: las dos rutas coinciden y retorna sin
+// tocar el servicio.
+func (a *Agent) reconcileServiceExe() error {
+	conn, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer conn.Disconnect()
+
+	srv, err := conn.OpenService(winSvcName)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	conf, err := srv.Config()
+	if err != nil {
+		return err
+	}
+
+	oldExe := serviceExePath(conf.BinaryPathName)
+	if oldExe == "" || strings.EqualFold(filepath.Clean(oldExe), filepath.Clean(a.EXE)) {
+		return nil
+	}
+
+	a.Logger.Infof("El servicio apunta a %s pero el agente está instalado en %s; reapuntando.", oldExe, a.EXE)
+
+	conf.BinaryPathName = replaceServiceExePath(conf.BinaryPathName, a.EXE)
+	if err := srv.UpdateConfig(conf); err != nil {
+		return err
+	}
+
+	a.cleanupStaleProgramDir(filepath.Dir(oldExe))
+	return nil
+}
+
+// cleanupStaleProgramDir borra el directorio de instalación que quedó huérfano
+// después de reapuntar el servicio.
+//
+// Antes de borrarlo rescata `meshagent.exe`: es lo único que no se vuelve a
+// bajar solo. Python, nushell y deno los redescarga el agente cuando los
+// necesita, y el desinstalador de Inno Setup no vive acá sino en `{app}`.
+//
+// La guarda del nombre no es paranoia decorativa: esta función recibe una ruta
+// derivada de la configuración de un servicio y termina en un RemoveAll.
+func (a *Agent) cleanupStaleProgramDir(dir string) {
+	if dir == "" || strings.EqualFold(filepath.Clean(dir), filepath.Clean(a.ProgramDir)) {
+		return
+	}
+	if !strings.EqualFold(filepath.Base(dir), progFilesName) {
+		a.Logger.Debugln("cleanupStaleProgramDir(): ruta inesperada, no se borra:", dir)
+		return
+	}
+
+	stale := filepath.Join(dir, a.MeshInstaller)
+	dst := filepath.Join(a.ProgramDir, a.MeshInstaller)
+	if rmm.FileExists(stale) && !rmm.FileExists(dst) {
+		if err := copyFile(stale, dst); err != nil {
+			a.Logger.Errorln("cleanupStaleProgramDir() copia del instalador de mesh:", err)
+		}
+	}
+
+	a.Logger.Infoln("Borrando el directorio de instalación huérfano:", dir)
+	if err := os.RemoveAll(dir); err != nil {
+		a.Logger.Errorln("cleanupStaleProgramDir() RemoveAll:", err)
 	}
 }
 

@@ -99,14 +99,15 @@ const (
 )
 
 var defaultWinTmpDir = filepath.Join(os.Getenv("PROGRAMDATA"), "ObserverRMM")
-var winMeshDir = filepath.Join(os.Getenv("PROGRAMFILES"), "Mesh Agent")
 var natsCheckin = []string{"agent-hello", "agent-agentinfo", "agent-disks", "agent-winsvc", "agent-publicip", "agent-wmi"}
 var limitNatsData = []string{"agent-winsvc", "agent-wmi"}
 
 func New(logger *logrus.Logger, version string) *Agent {
 	host, _ := ps.Host()
 	info := host.Info()
-	pd := filepath.Join(os.Getenv("ProgramFiles"), progFilesName)
+	// La ubicación instalada manda. Deducirla de %ProgramFiles% es justamente lo
+	// que rompía al agente de 32 bits sobre x64: ver ResolveProgramDir.
+	pd := ResolveProgramDir()
 	exe := filepath.Join(pd, winExeName)
 	sd := os.Getenv("SystemDrive")
 	winTempDir := defaultWinTmpDir

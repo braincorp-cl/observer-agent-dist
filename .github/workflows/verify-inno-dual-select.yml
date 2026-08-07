@@ -204,9 +204,12 @@ jobs:
   #   - lo que se mide acá es la SELECCIÓN, y para eso un archivo distinguible
   #     alcanza; el toolchain de cada binario se mide en el release.yml (T020);
   #   - con testigos, el `-m installsvc` del DeinitializeSetup no tiene nada que
-  #     registrar, así que este job no deja un servicio dando vueltas en el runner.
-  #     (Igual se instala con /DIR fuera de la ruta por defecto, que es la que ese
-  #     código tiene fija.)
+  #     registrar, así que este job no deja un servicio dando vueltas en el runner:
+  #     el "observeragent.exe" instalado es un archivo de texto y Windows se niega
+  #     a ejecutarlo. Esa —y no el /DIR— es la razón por la que el job es inocuo.
+  #     Hasta el arreglo de las rutas divergentes 386 × x64, el DeinitializeSetup
+  #     tenía el directorio fijo y el /DIR bastaba para dejarlo apuntando al vacío;
+  #     ahora usa {app}, que sí es el directorio donde este job instala.
   real-setup-iss:
     name: El setup.iss real elige el binario moderno
     runs-on: windows-latest

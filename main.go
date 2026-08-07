@@ -183,7 +183,10 @@ func setupLogging(level, to *string) {
 	} else {
 		switch runtime.GOOS {
 		case "windows":
-			logFile, _ = os.OpenFile(filepath.Join(os.Getenv("ProgramFiles"), "ObserverAgent", "agent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
+			// La ruta sale de la ubicación instalada, no de %ProgramFiles%: en un
+			// agente de 32 bits sobre x64 esa variable apunta a otro directorio y
+			// el log terminaba lejos del resto de la instalación.
+			logFile, _ = os.OpenFile(filepath.Join(agent.ResolveProgramDir(), "agent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
 		default:
 			logFile, _ = os.OpenFile(filepath.Join("/var/log/", "observeragent.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
 		}
