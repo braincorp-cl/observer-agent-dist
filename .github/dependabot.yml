@@ -1,0 +1,47 @@
+# Dependabot — actualizaciones de version para observer-agent-dist.
+#
+# Las alertas de SEGURIDAD ya estaban encendidas en este repo (es el de las 19:
+# 18 descartadas con `not_used` el 2026-08-02 y 1 abierta a proposito). Esto
+# agrega solo las de VERSION, y a proposito cubre un unico ecosistema.
+#
+# ── Por que NO hay `gomod` aca ────────────────────────────────────────────────
+#
+# `go.mod` esta clavado en `go 1.20` deliberadamente: un solo arbol alimenta los
+# DOS toolchains de ADR-023 (moderno 1.26.x y legacy 1.20.14, el ultimo Go que
+# soporta Windows 7 / Server 2008 R2). Subir modulos es exactamente lo que
+# rompe la pata legacy:
+#
+#   golang.org/x/net v0.33.0 -> el arreglo esta en v0.36.0, que exige `go 1.23.0`
+#                               (medido en el proxy: v0.33.0 = go 1.18,
+#                                v0.36.0 = go 1.23.0, v0.55.0 = go 1.25.0)
+#
+# Y no es un caso aislado: hoy casi cualquier bump de modulo moderno pide
+# `go >= 1.21`. Cada PR de gomod naceria roto contra el flujo legacy, y cerrarlos
+# a mano cada semana no es una senal, es ruido. Decision del usuario, 2026-08-06.
+#
+# ⚠️ Esto NO significa que el agente no envejezca — envejece, y bastante. Lo que
+# pasa es que la lista de alertas ya se midio y NO sirve como red de contencion
+# en este repo: de las 19, 18 eran de paquetes que el agente no enlaza, y la
+# unica alcanzable por simbolo (x/text, GO-2026-5970) nunca aparecio ahi porque
+# no tiene GHSA. El instrumento serio es `govulncheck -mode=source` corrido
+# sobre los DOS toolchains, no esta lista.
+
+version: 2
+updates:
+  # ── GitHub Actions ──────────────────────────────────────────────────────────
+  # Unico ecosistema sin atadura al toolchain: subir actions/checkout no puede
+  # romper el build legacy. Cubre las 5 en uso (checkout, setup-go,
+  # upload-artifact, download-artifact, action-gh-release).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
