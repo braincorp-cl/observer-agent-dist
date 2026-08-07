@@ -199,6 +199,21 @@ func New(logger *logrus.Logger, version string) *Agent {
 		if len(ac.CustomMeshDir) > 0 {
 			MeshSysExe = filepath.Join(ac.CustomMeshDir, "MeshAgent.exe")
 		} else {
+			// %ProgramFiles% acá es DELIBERADO y no debe cambiarse por
+			// ResolveProgramDir, aunque el resto del archivo haya dejado de
+			// usarlo.
+			//
+			// Son dos acoplamientos distintos. El directorio del agente lo fija
+			// nuestro instalador, y por eso hay que preguntárselo a él. El del
+			// Mesh Agent lo fija el instalador de MeshCentral, que se ubica solo
+			// según su propio bitness: el meshagent de 32 bits se instala en la
+			// vista de 32 bits. Sobre un x64 eso es `C:\Program Files (x86)\Mesh
+			// Agent`, que es justo lo que devuelve esta línea dentro de un
+			// proceso de 32 bits. Está medido en terreno, no supuesto.
+			//
+			// Hacer que esta ruta siguiera al agente la mandaría a `C:\Program
+			// Files\Mesh Agent`, donde no hay nada: se perdería el node id, el
+			// `-fulluninstall` y la recuperación del mesh.
 			MeshSysExe = filepath.Join(os.Getenv("ProgramFiles"), "Mesh Agent", "MeshAgent.exe")
 		}
 	case "darwin":
