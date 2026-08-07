@@ -271,8 +271,27 @@ func (a *Agent) reconcileServiceExe() error {
 		return err
 	}
 
-	oldExe := serviceExePath(conf.BinaryPathName)
+	oldExe, unambiguous := parseServiceExePath(conf.BinaryPathName)
 	if oldExe == "" || strings.EqualFold(filepath.Clean(oldExe), filepath.Clean(a.EXE)) {
+		return nil
+	}
+	if !unambiguous {
+		// Una ruta sin comillas y con espacios no se puede reescribir sin
+		// riesgo de inventar un argumento. Se deja el servicio como está.
+		a.Logger.Errorln("El BinaryPathName del servicio es ambiguo, no se reapunta:", conf.BinaryPathName)
+		return nil
+	}
+
+	// El destino tiene que existir ANTES de reapuntar. Si no, esta función
+	// dejaría el servicio mirando a un binario inexistente y —peor— borraría a
+	// continuación el directorio donde sí estaba el agente: la máquina quedaría
+	// sin agente, sin desinstalador y sin forma de volver desde la consola.
+	//
+	// Pasa cuando `-m installsvc` corre desde una carpeta cualquiera en un equipo
+	// instalado con /DIR: ahí no hay `unins*.exe` que reconocer ni `InstallDir`
+	// que leer, y ResolveProgramDir cae al valor por defecto, que no es el suyo.
+	if !rmm.FileExists(a.EXE) {
+		a.Logger.Errorln("No se reapunta el servicio: el binario de destino no existe:", a.EXE)
 		return nil
 	}
 
@@ -294,14 +313,35 @@ func (a *Agent) reconcileServiceExe() error {
 // bajar solo. Python, nushell y deno los redescarga el agente cuando los
 // necesita, y el desinstalador de Inno Setup no vive acá sino en `{app}`.
 //
-// La guarda del nombre no es paranoia decorativa: esta función recibe una ruta
-// derivada de la configuración de un servicio y termina en un RemoveAll.
+// Las guardas no son paranoia decorativa: esta función recibe una ruta derivada
+// de la configuración de un servicio y termina en un RemoveAll.
 func (a *Agent) cleanupStaleProgramDir(dir string) {
 	if dir == "" || strings.EqualFold(filepath.Clean(dir), filepath.Clean(a.ProgramDir)) {
 		return
 	}
-	if !strings.EqualFold(filepath.Base(dir), progFilesName) {
+	if !staleDirNameLooksRight(dir) {
 		a.Logger.Debugln("cleanupStaleProgramDir(): ruta inesperada, no se borra:", dir)
+		return
+	}
+
+	// Comparar las cadenas no alcanza para saber si son directorios distintos.
+	// `C:\PROGRA~1\ObserverAgent` y `C:\Program Files\ObserverAgent` son el MISMO
+	// directorio escrito de dos formas, y un servicio puede haber quedado
+	// registrado con la forma corta 8.3; lo mismo vale para una unión (junction)
+	// o una unidad creada con subst. Sin esta comprobación, el RemoveAll se
+	// llevaría la instalación viva que se acaba de dejar como buena.
+	if sameDir(dir, a.ProgramDir) {
+		a.Logger.Debugln("cleanupStaleProgramDir(): es el mismo directorio por otro nombre, no se borra:", dir)
+		return
+	}
+
+	// Un directorio con `unins*.exe` es una instalación de Inno Setup con su
+	// entrada viva en «Agregar o quitar programas». Borrarlo dejaría la entrada
+	// apuntando a un desinstalador que ya no existe —el residuo en ARP que
+	// justamente se persigue en amd64— y `AgentUninstall` fallaría en silencio
+	// para siempre. Si aparece uno acá, hay que mirarlo, no borrarlo.
+	if hasInnoUninstaller(dir) {
+		a.Logger.Errorln("cleanupStaleProgramDir(): el directorio huérfano tiene desinstalador de Inno Setup, no se borra:", dir)
 		return
 	}
 

@@ -66,11 +66,55 @@ func selfInstallDir() string {
 		return ""
 	}
 	dir := filepath.Dir(self)
-	matches, err := filepath.Glob(filepath.Join(dir, "unins*.exe"))
-	if err != nil || len(matches) == 0 {
+	if !hasInnoUninstaller(dir) {
 		return ""
 	}
 	return dir
+}
+
+// hasInnoUninstaller responde si el directorio contiene el desinstalador de Inno
+// Setup, que es la firma de que ahí hay una instalación y no una copia suelta.
+//
+// Se lista el directorio en vez de usar filepath.Glob a propósito: el nombre del
+// directorio lo elige quien instala (`/DIR=`), y un corchete o un asterisco en él
+// convierten el patrón del Glob en algo que no coincide con nada —o directamente
+// en ErrBadPattern—. El resultado sería declarar «esto no es una instalación» con
+// el desinstalador al lado, y de esa respuesta cuelga un os.RemoveAll.
+func hasInnoUninstaller(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasPrefix(name, "unins") && strings.HasSuffix(name, ".exe") {
+			return true
+		}
+	}
+	return false
+}
+
+// sameDir responde si dos rutas son el mismo directorio, aunque estén escritas
+// distinto: forma corta 8.3 (`PROGRA~1`), uniones, unidades de subst.
+//
+// os.SameFile compara la identidad que reporta el sistema de archivos, no las
+// cadenas. Si alguna de las dos no se puede consultar se responde que no son el
+// mismo directorio, que es inocuo en los dos casos posibles: o el huérfano no
+// existe —y entonces no hay nada que borrar— o el de destino no existe, y para
+// eso quien llama ya tiene una guarda propia antes de llegar acá.
+func sameDir(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 func readInstallDir() string {

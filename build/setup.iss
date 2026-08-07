@@ -100,8 +100,14 @@ Type: filesandordirs; Name: "{#MESHDIR}";
 ; El Mesh Agent de 32 bits se instala solo, en la vista de 32 bits: sobre un
 ; Windows x64 eso es "C:\Program Files (x86)\Mesh Agent", que la línea de arriba
 ; no toca. En un Windows de 32 bits genuino {commonpf32} vale lo mismo que
-; {#MESHDIR} y esta línea no hace nada. Sobra una de las dos siempre; ninguna
-; molesta, y la que sobra no existe en disco.
+; {#MESHDIR} y esta línea es redundante.
+;
+; Es la MISMA suposición de propiedad exclusiva que ya hace la línea de arriba
+; desde siempre: que el "Mesh Agent" del equipo es el nuestro. Si un día conviven
+; dos productos basados en MeshCentral en la misma máquina, las dos líneas
+; sobran, no sólo ésta —y el choque empezaría antes, en el nombre del servicio—.
+; No está medido que sea el caso en la flota; queda dicho para que nadie lo lea
+; como si lo estuviera.
 Type: filesandordirs; Name: "{commonpf32}\Mesh Agent";
 
 [Code]

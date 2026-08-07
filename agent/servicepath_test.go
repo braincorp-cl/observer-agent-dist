@@ -16,32 +16,72 @@ const (
 	binViejo = `"C:\Program Files (x86)\ObserverAgent\observeragent.exe" -m svc`
 )
 
-func TestServiceExePath(t *testing.T) {
+func TestParseServiceExePath(t *testing.T) {
 	casos := []struct {
-		nombre  string
-		entrada string
-		quiero  string
+		nombre    string
+		entrada   string
+		quiero    string
+		confiable bool
 	}{
-		{"el caso real: ruta entre comillas con argumentos", binViejo, exeViejo},
-		{"ruta entre comillas sin argumentos", `"` + exeNuevo + `"`, exeNuevo},
-		{"ruta sin comillas ni espacios, con argumentos", `C:\obs\observeragent.exe -m svc`, `C:\obs\observeragent.exe`},
-		{"ruta sin comillas ni espacios ni argumentos", `C:\obs\observeragent.exe`, `C:\obs\observeragent.exe`},
-		{"con espacios alrededor", "  " + binViejo + "  ", exeViejo},
+		{"el caso real: ruta entre comillas con argumentos", binViejo, exeViejo, true},
+		{"ruta entre comillas sin argumentos", `"` + exeNuevo + `"`, exeNuevo, true},
+		{"ruta sin comillas ni espacios, con argumentos", `C:\obs\observeragent.exe -m svc`, `C:\obs\observeragent.exe`, true},
+		{"ruta sin comillas ni espacios ni argumentos", `C:\obs\observeragent.exe`, `C:\obs\observeragent.exe`, true},
+		{"con espacios alrededor", "  " + binViejo + "  ", exeViejo, true},
+		{"sin comillas y con modificador estilo Windows", `C:\obs\observeragent.exe /m svc`, `C:\obs\observeragent.exe`, true},
 
 		// Sin comillas y CON espacios en la ruta no hay forma de saber dónde
-		// termina el ejecutable. Se corta en el primer espacio, que es lo que
-		// hace el propio Windows al lanzar el servicio.
-		{"ruta con espacios y sin comillas: se corta como lo hace Windows", `C:\Program Files\obs.exe -m svc`, `C:\Program`},
+		// termina el ejecutable: el corte cae en medio del nombre del directorio.
+		// El SCM lo resuelve probando candidatos contra el disco; acá no se puede,
+		// así que se marca NO confiable y quien llama se abstiene de reescribir.
+		// Sin esta marca, la reescritura producía
+		//   "C:\...\observeragent.exe" Files\ObserverAgent\observeragent.exe -m svc
+		// y el servicio arrancaba sin `-m svc`: sin RPC, agente offline en la
+		// consola y el servicio "corriendo" para el usuario.
+		{"ruta con espacios y sin comillas: ambigua", `C:\Program Files\obs.exe -m svc`, `C:\Program`, false},
 
-		{"vacío", "", ""},
-		{"sólo espacios", "   ", ""},
-		{"comilla sin cerrar", `"C:\obs\observeragent.exe`, `C:\obs\observeragent.exe`},
+		{"vacío", "", "", false},
+		{"sólo espacios", "   ", "", false},
+		{"comilla sin cerrar", `"C:\obs\observeragent.exe`, `C:\obs\observeragent.exe`, false},
 	}
 
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
-			if got := serviceExePath(c.entrada); got != c.quiero {
-				t.Errorf("serviceExePath(%q) = %q, quería %q", c.entrada, got, c.quiero)
+			got, confiable := parseServiceExePath(c.entrada)
+			if got != c.quiero || confiable != c.confiable {
+				t.Errorf("parseServiceExePath(%q) = (%q, %v), quería (%q, %v)",
+					c.entrada, got, confiable, c.quiero, c.confiable)
+			}
+		})
+	}
+}
+
+// La guarda de nombre es lo último que separa una ruta leída de la configuración
+// de un servicio de un os.RemoveAll.
+func TestStaleDirNameLooksRight(t *testing.T) {
+	casos := []struct {
+		nombre  string
+		entrada string
+		quiero  bool
+	}{
+		{"el directorio huérfano real", `C:\Program Files (x86)\ObserverAgent`, true},
+		{"con barra al final", `C:\Program Files (x86)\ObserverAgent\`, true},
+		{"en otra unidad", `D:\ObserverAgent`, true},
+		{"distinta caja", `C:\Program Files\OBSERVERAGENT`, true},
+
+		{"la raíz del disco", `C:\`, false},
+		{"Program Files entero", `C:\Program Files`, false},
+		{"Windows", `C:\Windows`, false},
+		{"el directorio de Mesh", `C:\Program Files\Mesh Agent`, false},
+		{"un subdirectorio del directorio bueno", `C:\Program Files\ObserverAgent\bin`, false},
+		{"vacío", "", false},
+		{"sólo espacios", "   ", false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := staleDirNameLooksRight(c.entrada); got != c.quiero {
+				t.Errorf("staleDirNameLooksRight(%q) = %v, quería %v", c.entrada, got, c.quiero)
 			}
 		})
 	}

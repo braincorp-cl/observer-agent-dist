@@ -26,23 +26,27 @@ const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
 // La vista se elige con KEY_WOW64_64KEY / KEY_WOW64_32KEY al abrir la clave, que
 // es lo que hace esta implementación. Con eso el agente de 32 bits reporta las
 // dos vistas, igual que el de 64 bits.
-func installedSoftwareList() ([]so.Software, error) {
+//
+// El segundo valor de retorno es la cantidad de subclaves que no se pudieron
+// leer. Se devuelve en vez de tragarse: un inventario corto sin explicación es
+// el mismo modo de falla silencioso que este archivo está corrigiendo.
+func installedSoftwareList() ([]so.Software, int, error) {
 	if !isWow64() {
 		// Windows de 32 bits genuino: hay una sola vista y las banderas WOW64 no
 		// significan nada. Pedir las dos devolvería el mismo listado dos veces.
 		return getSoftwareList(uninstallKey, "X32", 0)
 	}
 
-	sw64, err := getSoftwareList(uninstallKey, "X64", registry.WOW64_64KEY)
+	sw64, skipped64, err := getSoftwareList(uninstallKey, "X64", registry.WOW64_64KEY)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	sw32, err := getSoftwareList(uninstallKey, "X32", registry.WOW64_32KEY)
+	sw32, skipped32, err := getSoftwareList(uninstallKey, "X32", registry.WOW64_32KEY)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return append(sw64, sw32...), nil
+	return append(sw64, sw32...), skipped64 + skipped32, nil
 }
 
 // isWow64 responde si este proceso de 32 bits corre sobre un Windows de 64 bits.
@@ -58,26 +62,33 @@ func isWow64() bool {
 	return wow64
 }
 
-func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, error) {
+func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, int, error) {
 	access := uint32(registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS) | wow64Flag
 
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, baseKey, access)
 	if err != nil {
-		return nil, fmt.Errorf("error al leer el registro: %s", err.Error())
+		return nil, 0, fmt.Errorf("error al leer el registro: %s", err.Error())
 	}
 	defer k.Close()
 
 	swList := make([]so.Software, 0)
+	skipped := 0
 
 	subkeys, err := k.ReadSubKeyNames(-1)
 	if err != nil {
-		return nil, fmt.Errorf("error al listar las subclaves del registro: %s", err.Error())
+		return nil, 0, fmt.Errorf("error al listar las subclaves del registro: %s", err.Error())
 	}
 
 	for _, sw := range subkeys {
-		sk, err := registry.OpenKey(registry.LOCAL_MACHINE, baseKey+`\`+sw, access)
+		// Se abre COLGANDO del handle ya abierto y pidiendo sólo QUERY_VALUE. La
+		// vista WOW64 se hereda del padre, así que no hace falta repetir la
+		// bandera, y pedir de más haría fallar la apertura en subclaves con ACL
+		// restrictiva: ese programa desaparecería del inventario sin dejar rastro.
+		sk, err := registry.OpenKey(k, sw, registry.QUERY_VALUE)
 		if err != nil {
-			// Una subclave ilegible no invalida el inventario entero: se salta.
+			// Una subclave ilegible no invalida el inventario entero: se salta,
+			// pero se cuenta, para que el faltante no sea invisible.
+			skipped++
 			continue
 		}
 
@@ -127,16 +138,19 @@ func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, err
 		sk.Close()
 	}
 
-	return swList, nil
+	return swList, skipped, nil
 }
 
 func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
 	ret := make([]ormm.WinSoftwareList, 0)
 
-	sw, err := installedSoftwareList()
+	sw, skipped, err := installedSoftwareList()
 	if err != nil {
 		a.Logger.Errorln("GetInstalledSoftware():", err)
 		return ret
+	}
+	if skipped > 0 {
+		a.Logger.Errorf("GetInstalledSoftware(): %d subclaves del registro no se pudieron leer; el inventario va incompleto.", skipped)
 	}
 
 	for _, s := range sw {
