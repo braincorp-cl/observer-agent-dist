@@ -957,7 +957,13 @@ func (a *Agent) EditService(name, startupType string) rmm.WinSvcResp {
 	return rmm.WinSvcResp{Success: false, ErrorMsg: "/na"}
 }
 
-func (a *Agent) GetInstalledSoftware() []rmm.WinSoftwareList { return []rmm.WinSoftwareList{} }
+// Fuera de Windows no hay inventario de software que leer, así que la lista
+// vacía es la respuesta CORRECTA y completa: el segundo valor es `true`. Si
+// dijera `false`, los consumidores —que se niegan a enviar un inventario poco
+// confiable— dejarían de responder en Linux y macOS.
+func (a *Agent) GetInstalledSoftware() ([]rmm.WinSoftwareList, bool) {
+	return []rmm.WinSoftwareList{}, true
+}
 
 func (a *Agent) ChecksRunning() bool { return false }
 

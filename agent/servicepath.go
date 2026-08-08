@@ -133,6 +133,23 @@ func staleDirNameLooksRight(dir string) bool {
 	return strings.EqualFold(windowsBase(dir), progFilesName)
 }
 
+// looksLikeAgentExe es la mitad barata de «¿esta ruta es el binario del agente?»:
+// la que se puede decidir sin tocar el disco, y por lo tanto probar.
+//
+// Existe por un defecto concreto: al resolver un `BinaryPathName` sin comillas se
+// aceptaba la primera candidata que existiera en disco, y la comprobación usada
+// devolvía true para DIRECTORIOS. En `C:\Program Files (x86)\ObserverAgent\observeragent.exe -m svc`
+// la candidata `C:\Program Files` existe —es un directorio— y se tomaba como el
+// ejecutable; la reescritura dejaba entonces el servicio sin `-m svc` y el agente
+// muerto, en una máquina que la consola ya no alcanza.
+//
+// El nombre solo no basta (hay que confirmar contra el disco que además es un
+// archivo), pero descarta de entrada todo lo que ni siquiera se llama como el
+// agente.
+func looksLikeAgentExe(path string) bool {
+	return strings.EqualFold(windowsBase(path), winExeName)
+}
+
 // windowsBase es el último componente de una ruta de Windows.
 //
 // No se usa filepath.Base a propósito: filepath habla el dialecto del sistema

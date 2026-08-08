@@ -136,6 +136,44 @@ func TestStaleDirNameLooksRight(t *testing.T) {
 	}
 }
 
+// El defecto que esto cierra fue el peor de los tres arreglos: la resolucion
+// contra el disco usaba una comprobacion que devuelve true para DIRECTORIOS, asi
+// que `C:\Program Files` se aceptaba como «el ejecutable» y la reescritura dejaba
+// el servicio sin `-m svc`. Agente muerto, y sin downgrade ni update lateral que
+// lo rescate: hay que ir a la maquina.
+func TestLooksLikeAgentExe(t *testing.T) {
+	casos := []struct {
+		nombre  string
+		entrada string
+		quiero  bool
+	}{
+		{"el binario real", `C:\Program Files\ObserverAgent\observeragent.exe`, true},
+		{"en el directorio viejo", `C:\Program Files (x86)\ObserverAgent\observeragent.exe`, true},
+		{"distinta caja", `C:\obs\OBSERVERAGENT.EXE`, true},
+		{"sin directorio", `observeragent.exe`, true},
+
+		// Las candidatas que produce un BinaryPathName sin comillas. La segunda
+		// EXISTE en cualquier Windows, y por ser un directorio se colaba.
+		{"candidata C:\\Program", `C:\Program`, false},
+		{"candidata C:\\Program Files (un DIRECTORIO que existe)", `C:\Program Files`, false},
+		{"candidata con argumentos pegados", `C:\Program Files\ObserverAgent\observeragent.exe -m`, false},
+
+		{"el desinstalador", `C:\Program Files\ObserverAgent\unins000.exe`, false},
+		{"el meshagent", `C:\Program Files\ObserverAgent\meshagent.exe`, false},
+		{"la raíz del disco", `C:\`, false},
+		{"vacío", "", false},
+		{"sólo espacios", "   ", false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := looksLikeAgentExe(c.entrada); got != c.quiero {
+				t.Errorf("looksLikeAgentExe(%q) = %v, quería %v", c.entrada, got, c.quiero)
+			}
+		})
+	}
+}
+
 func TestReplaceServiceExePath(t *testing.T) {
 	sinComillas := `C:\Program Files (x86)\ObserverAgent\observeragent.exe -m svc`
 

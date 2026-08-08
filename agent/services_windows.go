@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,23 +286,27 @@ func (a *Agent) ReconcileService() error {
 
 	oldExe := resolveServiceExe(conf.BinaryPathName)
 	if oldExe == "" {
-		a.Logger.Errorln("No se pudo determinar el ejecutable del servicio, no se reapunta:", conf.BinaryPathName)
-		return nil
+		// Devolver error y no nil: este equipo NO quedó reparado, y `-m installsvc`
+		// tiene que salir con código distinto de cero para que el `install service:`
+		// del log de Inno lo distinga de uno que sí se reparó. Si acá se retorna
+		// nil, la única señal que permitiría encontrarlo reporta éxito y el equipo
+		// se queda en el bucle de descarga horaria para siempre.
+		return fmt.Errorf("no se pudo determinar el ejecutable del servicio, no se reapunta: %q", conf.BinaryPathName)
 	}
 	if strings.EqualFold(filepath.Clean(oldExe), filepath.Clean(a.EXE)) {
 		return nil
 	}
 
-	// El destino tiene que existir ANTES de reapuntar. Si no, esta función
-	// dejaría el servicio mirando a un binario inexistente: la máquina quedaría
-	// sin agente y sin forma de volver desde la consola.
+	// El destino tiene que existir ANTES de reapuntar, y tiene que ser un ARCHIVO
+	// que se llame como el agente. Si no, esta función dejaría el servicio mirando
+	// a algo que no arranca: la máquina quedaría sin agente y sin forma de volver
+	// desde la consola.
 	//
 	// Pasa cuando `-m installsvc` corre desde una carpeta cualquiera en un equipo
 	// instalado con /DIR: ahí no hay `unins*.exe` que reconocer ni `InstallDir`
 	// que leer, y ResolveProgramDir cae al valor por defecto, que no es el suyo.
-	if !rmm.FileExists(a.EXE) {
-		a.Logger.Errorln("No se reapunta el servicio: el binario de destino no existe:", a.EXE)
-		return nil
+	if !isAgentExeFile(a.EXE) {
+		return fmt.Errorf("no se reapunta el servicio: el binario de destino no existe o no es un archivo: %q", a.EXE)
 	}
 
 	a.Logger.Infof("El servicio apunta a %s pero el agente está instalado en %s; reapuntando.", oldExe, a.EXE)
@@ -311,8 +316,65 @@ func (a *Agent) ReconcileService() error {
 		return err
 	}
 
-	a.rescueMeshInstaller(filepath.Dir(oldExe))
+	oldDir := filepath.Dir(oldExe)
+	a.rescueMeshInstaller(oldDir)
+	a.refreshStaleAgentBinary(oldDir)
 	return nil
+}
+
+// refreshStaleAgentBinary deja también en el directorio viejo una copia del
+// binario nuevo.
+//
+// No es redundancia: `tasks_windows.go` crea cada tarea programada con `Path`
+// RELATIVO (`observeragent.exe`) y `WorkingDir = a.ProgramDir`, y el Programador
+// de tareas resuelve ese nombre contra el WorkingDir **grabado cuando la tarea se
+// creó**. En un equipo divergente eso apunta al directorio viejo, y como el
+// arreglo dejó de borrarlo —a propósito, porque borrarlo mataba las tareas— esas
+// tareas seguirían ejecutando el binario ANTERIOR indefinidamente, sin que
+// ninguna corrección del update alcance a los scripts programados, mientras la
+// consola muestra la máquina como actualizada.
+//
+// Reescribir la definición de cada tarea sería lo «limpio», pero exige recorrer y
+// modificar el Programador de tareas en mitad de una actualización desatendida.
+// Copiar un archivo hace lo mismo y no toca nada del sistema.
+func (a *Agent) refreshStaleAgentBinary(oldDir string) {
+	if oldDir == "" || sameDir(oldDir, a.ProgramDir) {
+		return
+	}
+
+	stale := filepath.Join(oldDir, winExeName)
+	if !isAgentExeFile(stale) {
+		return
+	}
+
+	if err := copyFile(a.EXE, stale); err != nil {
+		// Es esperable que falle si algo lo está ejecutando justo ahora: Windows
+		// no deja sobrescribir un .exe mapeado. No es fatal.
+		a.Logger.Errorln("refreshStaleAgentBinary():", err)
+		return
+	}
+	a.Logger.Infoln("Binario nuevo copiado también al directorio viejo, para las tareas programadas que lo tienen de WorkingDir:", oldDir)
+}
+
+// isAgentExeFile responde si la ruta es un ARCHIVO que se llama como el binario
+// del agente.
+//
+// No se usa `rmm.FileExists` a propósito: ese helper es `os.Stat` y devuelve
+// **true para directorios** —y también ante errores que no sean «no existe»,
+// como permiso denegado—. Con él, al resolver un BinaryPathName sin comillas la
+// candidata `C:\Program Files` se aceptaba como «el ejecutable», y la reescritura
+// producía una línea donde `-m svc` quedaba detrás de un argumento posicional.
+// Go deja de parsear flags ahí, el agente sale de inmediato, el SCM da error 1053
+// y el equipo queda muerto — sin downgrade ni update lateral que lo rescate.
+func isAgentExeFile(path string) bool {
+	if !looksLikeAgentExe(path) {
+		return false
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return fi.Mode().IsRegular()
 }
 
 // rescueMeshInstaller copia `meshagent.exe` desde el directorio viejo al nuevo.
@@ -364,6 +426,36 @@ func (a *Agent) removeLegacyProgramDir() {
 		return
 	}
 
+	// El rescate va ACÁ y no sólo en el camino de actualización. Separar el
+	// rescate del borrado dejó un hueco: una máquina que ya no recibe otro update
+	// —porque ya está en LATEST_AGENT_VER, o porque un admin arregló la ruta del
+	// servicio a mano— nunca pasa por `ReconcileService`, así que su `meshagent.exe`
+	// nunca se rescata… y este borrado se lleva la ÚNICA copia de la máquina. El
+	// `[UninstallRun] {app}\meshagent.exe -fulluninstall` no encontraría nada, el
+	// nodo seguiría vivo en MeshCentral y no quedaría binario local para
+	// desregistrarlo a mano. Rescatar primero es lo que hacía el código anterior,
+	// de forma atómica, y se había perdido al separarlos.
+	a.rescueMeshInstaller(legacy)
+
+	// Un directorio con `unins*.exe` es OTRA instalación de Inno Setup, con su
+	// entrada viva en «Agregar o quitar programas». Pasa en un equipo instalado con
+	// /DIR fuera del directorio por defecto donde además existe un
+	// `%ProgramFiles%\ObserverAgent` por su cuenta. Borrarlo dejaría esa entrada
+	// apuntando a un desinstalador inexistente, imposible de quitar: el mismo
+	// residuo en ARP que se persigue aparte. Esta guarda existía y se perdió al
+	// mover el borrado; vuelve.
+	if hasInnoUninstaller(legacy) {
+		a.Logger.Errorln("removeLegacyProgramDir(): el directorio tiene desinstalador de Inno Setup, es otra instalación y no se borra:", legacy)
+		return
+	}
+
+	// Y tiene que contener el binario del agente. El nombre del directorio solo no
+	// alcanza para afirmar que es nuestro.
+	if !isAgentExeFile(filepath.Join(legacy, winExeName)) {
+		a.Logger.Errorln("removeLegacyProgramDir(): el directorio no contiene el binario del agente, no se borra:", legacy)
+		return
+	}
+
 	a.Logger.Infoln("Borrando el directorio de instalación que dejó la divergencia 386 × x64:", legacy)
 	if err := os.RemoveAll(legacy); err != nil {
 		a.Logger.Errorln("removeLegacyProgramDir():", err)
@@ -382,14 +474,21 @@ func (a *Agent) removeLegacyProgramDir() {
 // vuelva a ejercitar el update.
 func resolveServiceExe(binPath string) string {
 	for _, cand := range serviceExeCandidates(binPath) {
-		if rmm.FileExists(cand) {
+		// `isAgentExeFile` y no `rmm.FileExists`: la comprobación laxa aceptaba
+		// DIRECTORIOS, así que en `C:\Program Files (x86)\ObserverAgent\observeragent.exe -m svc`
+		// sin comillas la candidata `C:\Program Files` —que existe, porque es un
+		// directorio— se tomaba como el ejecutable y la reescritura dejaba el
+		// servicio sin `-m svc`, o sea el agente muerto y sin rescate por red.
+		if isAgentExeFile(cand) {
 			return cand
 		}
 	}
 
 	// Ninguna existe: el binario registrado ya no está. Queda el parseo
-	// sintáctico, que acierta salvo con rutas con espacios y sin comillas.
-	if exe, ok := parseServiceExePath(binPath); ok {
+	// sintáctico, que acierta salvo con rutas con espacios y sin comillas; se
+	// exige igual que el nombre sea el del agente, porque de acá sale la ruta que
+	// se compara y se reescribe.
+	if exe, ok := parseServiceExePath(binPath); ok && looksLikeAgentExe(exe) {
 		return exe
 	}
 	return ""

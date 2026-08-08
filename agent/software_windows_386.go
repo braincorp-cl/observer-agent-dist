@@ -176,7 +176,19 @@ func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, int
 	return swList, skipped, nil
 }
 
-func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
+// GetInstalledSoftware devuelve el inventario y si es CONFIABLE.
+//
+// El segundo valor no es opcional ni decorativo: el servidor REEMPLAZA el
+// inventario de la máquina con lo que llegue, así que enviar una lista corta es
+// peor que no enviar nada. Un admin que audite software desde la consola
+// —buscando por ejemplo una versión vulnerable de un producto de 64 bits— vería
+// la máquina limpia sin ninguna marca de que la lectura falló; el único rastro
+// sería un `Errorln` en el `agent.log` de ese equipo.
+//
+// Que la lista NO esté vacía no basta para creerle: si `isWow64` falla se cae a
+// la rama de vista única, que bajo WOW64 devuelve ~97 de 424 entradas y no está
+// vacía en absoluto.
+func (a *Agent) GetInstalledSoftware() ([]ormm.WinSoftwareList, bool) {
 	ret := make([]ormm.WinSoftwareList, 0)
 
 	sw, skipped, errs := installedSoftwareList()
@@ -186,6 +198,7 @@ func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
 	if skipped > 0 {
 		a.Logger.Errorf("GetInstalledSoftware(): %d subclaves del registro no se pudieron leer; el inventario va incompleto.", skipped)
 	}
+	complete := len(errs) == 0 && skipped == 0
 
 	for _, s := range sw {
 		t := s.InstallDate
@@ -200,5 +213,5 @@ func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
 			Uninstall:   CleanString(s.UninstallString),
 		})
 	}
-	return ret
+	return ret, complete
 }

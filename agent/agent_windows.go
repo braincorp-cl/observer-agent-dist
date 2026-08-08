@@ -724,14 +724,21 @@ func (a *Agent) SystemRebootRequired() (bool, error) {
 }
 
 func (a *Agent) SendSoftware() {
-	sw := a.GetInstalledSoftware()
+	sw, complete := a.GetInstalledSoftware()
 	a.Logger.Debugln(sw)
 
-	// Una lista vacía NO se envía. El servidor reemplaza el inventario de la
-	// máquina con lo que llegue, así que mandar `[]` borra lo que ya sabía y en
-	// la consola se lee como «esta máquina no tiene software instalado» en vez
-	// de como un error. Un Windows siempre tiene entradas en la clave Uninstall:
-	// una lista vacía es una falla de lectura, no un hecho del equipo.
+	// Un inventario POCO CONFIABLE no se envía. El servidor reemplaza el de la
+	// máquina con lo que llegue, así que una lectura fallida borra lo que ya
+	// sabía y en la consola se lee como un hecho del equipo en vez de como un
+	// error.
+	//
+	// No alcanza con rechazar la lista vacía: una lectura de una sola vista bajo
+	// WOW64 devuelve ~97 de 424 entradas, que no está vacía en absoluto y es
+	// justamente el subconteo silencioso que se está corrigiendo.
+	if !complete {
+		a.Logger.Errorln("SendSoftware(): el inventario está incompleto; no se envía para no reemplazar el del servidor con una lista corta.")
+		return
+	}
 	if len(sw) == 0 {
 		a.Logger.Errorln("SendSoftware(): el inventario salió vacío; no se envía para no borrar el que tiene el servidor.")
 		return
@@ -1373,11 +1380,12 @@ func (a *Agent) Stop(_ service.Service) error {
 // agente contra el servidor: un agente nuevo, permanentemente offline en la
 // consola.
 func (a *Agent) InstallService() error {
-	// Deja grabada la ubicación real. No crea la clave: si todavía no existe,
-	// esto es la primera pasada de Inno Setup sobre una instalación nueva y
-	// `-m install` la grabará en cuanto configure al agente.
-	if err := writeInstallDir(a.ProgramDir); err != nil {
-		a.Logger.Debugln("InstallService() writeInstallDir:", err)
+	// Deja grabada la ubicación real, y SÓLO si es un hecho del sistema de
+	// archivos. No crea la clave: si todavía no existe, esto es la primera pasada
+	// de Inno Setup sobre una instalación nueva y `-m install` la grabará en
+	// cuanto configure al agente.
+	if err := persistInstallDir(); err != nil {
+		a.Logger.Debugln("InstallService() persistInstallDir:", err)
 	}
 
 	if serviceExists(winSvcName) {

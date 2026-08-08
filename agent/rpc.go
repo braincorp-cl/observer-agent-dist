@@ -614,8 +614,24 @@ func (a *Agent) RunRPC() {
 			go func() {
 				var resp []byte
 				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
-				sw := a.GetInstalledSoftware()
+				sw, complete := a.GetInstalledSoftware()
 				a.Logger.Debugln(sw)
+
+				// La misma regla que `SendSoftware`, y por la misma razón: el
+				// servidor REEMPLAZA el inventario con lo que se responda. Esta
+				// es la ruta que dispara la pestaña Software de la consola, así
+				// que sin esta guarda un clic bastaba para borrar el inventario
+				// entero de la máquina y rendirlo como «no tiene software».
+				//
+				// Se prefiere no responder —y que la consola muestre un tiempo
+				// de espera agotado— antes que responder algo falso: el error se
+				// ve, el borrado silencioso no. En Linux y macOS la lista vacía
+				// llega con `complete = true`, así que ahí no cambia nada.
+				if !complete {
+					a.Logger.Errorln("softwarelist: el inventario está incompleto; no se responde para no reemplazar el del servidor.")
+					return
+				}
+
 				ret.Encode(sw)
 				msg.Respond(resp)
 			}()

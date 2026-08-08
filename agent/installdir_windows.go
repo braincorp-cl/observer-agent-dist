@@ -154,3 +154,25 @@ func writeInstallDir(dir string) error {
 
 	return k.SetStringValue(installDirRegValue, dir)
 }
+
+// persistInstallDir graba la ubicación de instalación SÓLO cuando es un hecho
+// del sistema de archivos, nunca cuando es la adivinanza del nivel 3.
+//
+// La diferencia importa porque el valor grabado manda sobre esa adivinanza para
+// siempre después (`readInstallDir` va antes que `defaultProgramDir`). Si se
+// persistiera el valor por defecto —lo que pasa al correr `-m installsvc` desde
+// una copia suelta en un equipo instalado con `/DIR`— todo proceso que no corra
+// desde el directorio de instalación resolvería mal a partir de ahí: entre otros,
+// `AgentUninstall`, que construiría la ruta del `unins000.exe` equivocada, la
+// lanzaría sin comprobar el error, y un «desinstalar agente» pedido desde la
+// consola reportaría éxito sin quitar nada.
+//
+// Es incoherente además grabar un valor que `ReconcileService` se niega a usar
+// veinte líneas más abajo por no confiar en él.
+func persistInstallDir() error {
+	dir := selfInstallDir()
+	if dir == "" {
+		return nil
+	}
+	return writeInstallDir(dir)
+}

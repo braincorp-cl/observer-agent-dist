@@ -14,4 +14,4 @@ func ResolveProgramDir() string {
 	return filepath.Join(os.Getenv("ProgramFiles"), progFilesName)
 }
 
-func writeInstallDir(dir string) error { return nil }
+func persistInstallDir() error { return nil }
