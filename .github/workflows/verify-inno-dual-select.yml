@@ -387,7 +387,29 @@ jobs:
           assert "$r" "el guard sigue exceptuando a las instalaciones que YA tienen agente (solo bloquea la instalacion nueva)."
 
           rel=.github/workflows/release.yml
-          grep -q '/DArch=\${{ matrix.goarch }}' "$rel" && r=ok || r=no
-          assert "$r" "release.yml sigue pasando /DArch al compilar el instalador (sin el macro, el guard es inerte)."
+          # ⚠️ EL PATRON VA ESCAPADO CARACTER POR CARACTER, y no es un adorno: es
+          # lo unico que impide que Actions se coma esta linea antes que el shell.
+          #
+          # Actions sustituye las expresiones de los bloques `run:` buscando la
+          # apertura literal —un dolar seguido de dos llaves— y NO existe escape
+          # con backslash en su sintaxis. Escrito de la forma obvia, con esa
+          # apertura tal cual y un backslash delante, Actions igual evalua
+          # `matrix.goarch`; este job no tiene matrix, la expresion se resuelve a
+          # vacio y el shell termina recibiendo `grep -q '/DArch=\'`: backslash
+          # final, o sea `grep: Trailing backslash`, rc=2 y este assert en rojo
+          # PARA SIEMPRE con release.yml perfectamente correcto. Medido el
+          # 2026-08-08 con GNU grep 3.12, la misma familia que ubuntu-latest.
+          #
+          # Escapando cada caracter, el dolar y las dos llaves nunca quedan
+          # contiguos en el fuente: Actions no ve ninguna apertura que sustituir y
+          # grep -E los lee como literales. NO "simplificar" esto de vuelta a la
+          # forma legible, y NO escribir esa apertura en estos comentarios: el
+          # texto de un comentario tambien pasa por la sustitucion, y ahi el
+          # sintoma es peor —el workflow entero deja de parsear—.
+          #
+          # Se afirma el VALOR y no solo la bandera a proposito: un `/DArch=amd64`
+          # hardcodeado dejaria pasar el macro y apagaria el guard igual.
+          grep -qE '/DArch=\$\{\{ *matrix\.goarch *\}\}' "$rel" && r=ok || r=no
+          assert "$r" "release.yml sigue pasando /DArch=<goarch de la matriz> al compilar el instalador (sin el macro, o con un valor fijo, el guard es inerte)."
 
           exit $fail
