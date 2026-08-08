@@ -19,6 +19,17 @@
 #ifndef AgentSrc
   #define AgentSrc "C:\Users\Public\Documents\agent"
 #endif
+; Arquitectura de ESTE instalador ("386" o "amd64"). La pasa la CI:
+;   iscc build\setup.iss /DArch=386
+; Alimenta el guard de InitializeSetup que impide instalar el agente de 32 bits
+; en un Windows de 64 bits. El valor por defecto NO es una arquitectura a
+; propósito: si alguien compila sin el macro, el guard no se dispara y el
+; instalador se comporta como antes. Que ese olvido no pase inadvertido lo
+; custodia el job `estructura` de verify-inno-dual-select.yml, que comprueba que
+; release.yml siga pasando el macro.
+#ifndef Arch
+  #define Arch "sin-especificar"
+#endif
 
 [Setup]
 AppId={{0D34D278-5FAF-4159-A4A0-4E2D2C08139D}
@@ -135,10 +146,53 @@ Type: filesandordirs; Name: "{#MESHDIR}";
 ; la que existe el gate del corte de versión.
 
 [Code]
+// El agente de 32 bits NO se instala de cero en un Windows de 64 bits.
+//
+// POR QUÉ EXISTE ESTE GUARD. Esa combinación no es una configuración soportada:
+// es una instalación equivocada, y produce un equipo que se ve sano y no lo
+// está. El instalador deja los archivos en `C:\Program Files\ObserverAgent`
+// mientras el agente, corriendo bajo WOW64, deduce `C:\Program Files (x86)`; de
+// esa divergencia salían la autoactualización que nunca surte efecto —el equipo
+// re-descarga el instalador cada hora, para siempre, en silencio— y un inventario
+// de software que veía 97 de 424 programas. Y no hay corrección automática: el
+// servidor elige el instalador del update con el `goarch` que el propio agente
+// reporta, así que un 386 pide 386 para siempre.
+//
+// Se ataca acá, en el único punto donde la situación se CREA: alguien eligiendo
+// el instalador equivocado. Todo lo demás es tratar el síntoma.
+//
+// ⚠️ SÓLO BLOQUEA LA INSTALACIÓN NUEVA, y eso es esencial. Si bloqueara también
+// la actualización, un equipo que YA está en ese estado nunca podría recibir el
+// update — y perdería justamente el reapuntado del servicio que lo repara. La
+// señal de «ya hay un agente acá» es la clave de configuración del registro, que
+// crea `-m install` y borra la desinstalación.
+//
+// La comparación es en tiempo de ejecución y no con `#if` a propósito: deja el
+// texto legible para el gate que afirma sobre este archivo.
+function ArquitecturaEquivocada(): Boolean;
+begin
+  Result := ('{#Arch}' = '386') and IsWin64 and
+            (not RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\ObserverRMM'));
+end;
+
 function InitializeSetup(): boolean;
 var
   ResultCode: Integer;
 begin
+  if ArquitecturaEquivocada() then
+  begin
+    Log('ABORTADO: instalador de 32 bits (386) sobre un Windows de 64 bits, y sin instalacion previa.');
+    SuppressibleMsgBox(
+      'Este es el instalador de 32 bits (386) y este equipo es de 64 bits.' + #13#10 + #13#10 +
+      'Instale la version de 64 bits (amd64) del agente Observer RMM.' + #13#10 + #13#10 +
+      'Instalar la version de 32 bits aca deja el equipo en un estado que se ve' + #13#10 +
+      'correcto pero no lo esta: las actualizaciones no surten efecto y el' + #13#10 +
+      'inventario de software queda incompleto.',
+      mbCriticalError, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
+
   Exec('cmd.exe', '/c ping 127.0.0.1 -n 2 && net stop observeragent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log('Stop observeragent: ' + IntToStr(ResultCode));
 

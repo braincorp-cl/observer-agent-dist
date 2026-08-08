@@ -266,7 +266,11 @@ jobs:
           $src  = (Resolve-Path build_stage).Path
           $out  = (Resolve-Path installer_out).Path
           $base = "observeragent-${{ github.ref_name }}-windows-${{ matrix.goarch }}"
-          & $iscc "build\setup.iss" "/DAgentSrc=$src" "/DMyAppVersion=${{ steps.version.outputs.VERSION }}" "/O$out" "/F$base"
+          # /DArch alimenta el guard de InitializeSetup que impide instalar el
+          # agente de 32 bits de cero en un Windows de 64 bits. Sin el macro el
+          # guard no se dispara: el job `estructura` de verify-inno-dual-select.yml
+          # comprueba que esta linea siga pasandolo.
+          & $iscc "build\setup.iss" "/DAgentSrc=$src" "/DArch=${{ matrix.goarch }}" "/DMyAppVersion=${{ steps.version.outputs.VERSION }}" "/O$out" "/F$base"
 
       # T020, segunda mitad: verificar el binario que el instalador DEJA EN DISCO,
       # extrayéndolo del instalador de verdad. Un `go version` sobre el .exe que se

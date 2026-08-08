@@ -279,12 +279,55 @@ jobs:
           }
           Write-Host "OK - el instalador de producto entrega el binario moderno en Windows $realBuild."
 
+      # El guard de arquitectura, medido en un Windows x64 de verdad.
+      #
+      # El PAR importa y por eso vive en este job: el paso anterior ya probó que
+      # SIN `/DArch` el mismo setup.iss instala perfectamente en este runner
+      # (control negativo, el guard no bloquea de más). Acá se compila el MISMO
+      # archivo con `/DArch=386` y se exige que NO instale nada (control
+      # positivo). Si sólo se midiera uno de los dos, un guard que bloquee
+      # siempre y un guard que no bloquee nunca se verían igual de verdes.
+      #
+      # El veredicto se lee del DISCO, nunca del código de salida: el .exe de Inno
+      # se desprende de la consola y puede retornar antes de terminar.
+      - name: El instalador 386 se niega a instalarse de cero en un x64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $src  = (Resolve-Path stage_real).Path
+          $out  = (Resolve-Path out_real).Path
+          & $iscc "build\setup.iss" "/DAgentSrc=$src" "/DArch=386" "/DMyAppVersion=0.0.0" "/O$out" "/Farch386probe"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC fallo compilando setup.iss con /DArch=386" }
+
+          $dest = 'C:\observer-arch-guard-check'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          & .\out_real\arch386probe.exe /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$dest" "/LOG=$PWD\log-arch-guard.txt" | Out-Null
+          Start-Sleep -Seconds 5
+
+          $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+          $instalado = Test-Path (Join-Path $dest 'observeragent.exe')
+
+          Write-Host "=============== VEREDICTO (guard de arquitectura) ==============="
+          Write-Host "Runner            : build $realBuild, 64 bits (los runners de GitHub lo son)"
+          Write-Host "Instalador        : el MISMO setup.iss, compilado con /DArch=386"
+          Write-Host "Instalacion previa: ninguna (HKLM\SOFTWARE\ObserverRMM ausente en el runner)"
+          Write-Host "Dejo binario      : $instalado   (se espera False)"
+          Write-Host "================================================================="
+
+          if ($instalado) {
+            throw "el guard NO bloqueo: el instalador de 32 bits se instalo en un Windows de 64 bits sin instalacion previa. Ese equipo quedaria con la autoactualizacion muerta y el inventario incompleto, sin sintoma visible."
+          }
+          Write-Host "OK - el instalador de 32 bits se nego a instalarse de cero en un x64."
+
       - name: Guardar evidencia
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: real-setup-iss-evidence
-          path: log-real.txt
+          path: |
+            log-real.txt
+            log-arch-guard.txt
           retention-days: 7
 
   # Afirma sobre la REDACCIÓN de las dos entradas, no sobre una corrida. Existe
@@ -326,5 +369,25 @@ jobs:
           # a 10.0, Win7 deja de poder instalar y la rama legacy queda muerta.
           grep -q '^MinVersion=6\.1$' "$iss" && r=ok || r=no
           assert "$r" "[Setup] conserva el piso global MinVersion=6.1 (Win7 SP1)."
+
+          # --- Guard de arquitectura ---
+          # El modo de falla que se vigila acá es MUDO: si el macro /DArch deja de
+          # pasarse, `Arch` cae a su valor por defecto, el guard no se dispara
+          # nunca y el instalador compila y funciona igual. Nadie lo notaria hasta
+          # encontrar otro equipo con el agente de 32 bits sobre un x64.
+          grep -q "'{#Arch}' = '386'" "$iss" && r=ok || r=no
+          assert "$r" "setup.iss conserva el guard de arquitectura (compara Arch con 386)."
+
+          grep -q 'IsWin64' "$iss" && r=ok || r=no
+          assert "$r" "el guard sigue condicionado a IsWin64."
+
+          # Sin esta parte el guard bloquearia tambien la ACTUALIZACION, y un
+          # equipo ya en el estado malo nunca recibiria el arreglo que lo repara.
+          grep -q "RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\\\\ObserverRMM')" "$iss" && r=ok || r=no
+          assert "$r" "el guard sigue exceptuando a las instalaciones que YA tienen agente (solo bloquea la instalacion nueva)."
+
+          rel=.github/workflows/release.yml
+          grep -q '/DArch=\${{ matrix.goarch }}' "$rel" && r=ok || r=no
+          assert "$r" "release.yml sigue pasando /DArch al compilar el instalador (sin el macro, el guard es inerte)."
 
           exit $fail
