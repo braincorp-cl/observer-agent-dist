@@ -97,6 +97,9 @@ Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunO
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}";
 Type: filesandordirs; Name: "{#MESHDIR}";
+;
+; ⚠️ ASIMETRÍA CONOCIDA Y PENDIENTE DE MEDICIÓN — no es un descuido.
+;
 ; NO agregar acá "{commonpf32}\Mesh Agent", que es donde queda el Mesh Agent de
 ; 32 bits sobre un Windows x64 (medido en terreno). Se probó y se retiró: quien
 ; desregistra el nodo es el `-fulluninstall` del [UninstallRun] de arriba, y si
@@ -105,6 +108,31 @@ Type: filesandordirs; Name: "{#MESHDIR}";
 ; apuntando a un ejecutable inexistente y el nodo vivo en MeshCentral, sin
 ; recuperación local posible. Dejar el directorio en pie es el comportamiento
 ; recuperable; borrarlo, el irreversible.
+;
+; PERO ESE MISMO RAZONAMIENTO CONDENA A LA LÍNEA `{#MESHDIR}` DE ARRIBA, que es
+; el literal `{sd}\Program Files\Mesh Agent`: viva en amd64 y en Windows de 32
+; bits genuino, inerte justo en 386 sobre x64. Se deja EN PIE a propósito, y por
+; una razón que no es técnica sino de orden de las mediciones:
+;
+;   - La precondición del escenario malo NO es hipotética. Está en el log del
+;     2026-08-06 (LenovoG480 amd64, `/LOG=`): `meshagent.exe -fulluninstall`
+;     devolvió `CreateProcess failed (2)` porque `{app}\meshagent.exe` no
+;     existía, e Inno siguió adelante — el mismo log prueba que Inno NO aborta
+;     cuando un [UninstallRun] falla.
+;   - Esa corrida es la investigación ABIERTA del residuo en ARP de amd64.
+;     Cambiar esta línea ahora dejaría la medición pendiente hecha sobre código
+;     distinto del que produjo el síntoma.
+;
+; Se resuelve con el paso 0 del plan de terreno —desinstalar el agente amd64 con
+; `/LOG=`— que responde las tres preguntas de una vez: si `{app}\meshagent.exe`
+; existe en un amd64 sano, si el `-fulluninstall` corre y retorna, y si el
+; directorio y el servicio sobreviven. Con eso se decide con datos.
+;
+; La tercera salida evaluada fue condicionar la línea con un `Check:` que sólo
+; borre si el servicio ya no existe. Es lo correcto en principio, pero NO está
+; verificado que Inno evalúe funciones `Check` en [UninstallDelete] en tiempo de
+; desinstalación, y acá no se meten mecanismos sin medir: es la misma razón por
+; la que existe el gate del corte de versión.
 
 [Code]
 function InitializeSetup(): boolean;
