@@ -727,6 +727,16 @@ func (a *Agent) SendSoftware() {
 	sw := a.GetInstalledSoftware()
 	a.Logger.Debugln(sw)
 
+	// Una lista vacía NO se envía. El servidor reemplaza el inventario de la
+	// máquina con lo que llegue, así que mandar `[]` borra lo que ya sabía y en
+	// la consola se lee como «esta máquina no tiene software instalado» en vez
+	// de como un error. Un Windows siempre tiene entradas en la clave Uninstall:
+	// una lista vacía es una falla de lectura, no un hecho del equipo.
+	if len(sw) == 0 {
+		a.Logger.Errorln("SendSoftware(): el inventario salió vacío; no se envía para no borrar el que tiene el servidor.")
+		return
+	}
+
 	payload := map[string]interface{}{"agent_id": a.AgentID, "software": sw}
 	_, err := a.rClient.R().SetBody(payload).Post("/api/v3/software/")
 	if err != nil {
@@ -755,6 +765,10 @@ func (a *Agent) UninstallCleanup() {
 	CleanupSchedTasks()
 	os.RemoveAll(a.WinTmpDir)
 	os.RemoveAll(a.WinRunAsUserTmpDir)
+
+	// Después de CleanupSchedTasks, no antes: las tareas de un equipo con las
+	// rutas divergidas tienen ese directorio como WorkingDir.
+	a.removeLegacyProgramDir()
 }
 
 func (a *Agent) AgentUpdate(url, inno, version string) error {
@@ -1347,20 +1361,17 @@ func (a *Agent) Stop(_ service.Service) error {
 	return nil
 }
 
-// InstallService registra el servicio y, si ya existía, lo reconcilia con la
-// ubicación real del agente.
+// InstallService registra el servicio si no existe, y graba la ubicación real
+// del agente.
 //
-// Inno Setup invoca `observeragent.exe -m installsvc` desde `{app}` en
-// DeinitializeSetup, o sea después de haber dejado el binario nuevo en disco: el
-// binario que ejecuta esta función es el nuevo. Ése es el único punto del flujo
-// de actualización donde alguien sabe, sin adivinar, dónde quedó instalado el
-// agente.
-//
-// Antes esta función retornaba nil apenas el servicio existía, y ahí se perdía
-// la actualización en 386 sobre x64: el binario nuevo quedaba en `{app}` y el
-// servicio seguía ejecutando el viejo desde `%ProgramFiles%` = `(x86)`. La
-// versión reportada nunca cambiaba, así que el servidor volvía a mandar el mismo
-// update en el siguiente check-in, y en el siguiente, para siempre.
+// La REPARACIÓN de un servicio ya existente que apunta al binario equivocado no
+// vive acá sino en ReconcileService, y la separación es deliberada: `Install()`
+// trata un error de esta función como fatal (`installerMsg` con "error" termina
+// en `Logger.Fatalln`), y meter la reparación adentro convertía un error del SCM
+// —por ejemplo un servicio en estado MARKED_FOR_DELETE durante una
+// reinstalación— en una instalación abortada después de haber dado de alta al
+// agente contra el servidor: un agente nuevo, permanentemente offline en la
+// consola.
 func (a *Agent) InstallService() error {
 	// Deja grabada la ubicación real. No crea la clave: si todavía no existe,
 	// esto es la primera pasada de Inno Setup sobre una instalación nueva y
@@ -1370,7 +1381,7 @@ func (a *Agent) InstallService() error {
 	}
 
 	if serviceExists(winSvcName) {
-		return a.reconcileServiceExe()
+		return nil
 	}
 
 	// skip on first call of inno setup if this is a new install

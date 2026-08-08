@@ -16,6 +16,55 @@ const (
 	binViejo = `"C:\Program Files (x86)\ObserverAgent\observeragent.exe" -m svc`
 )
 
+// Las candidatas son lo que permite reparar un equipo cuyo servicio quedó
+// registrado sin comillas: el lado de Windows prueba cada una contra el disco,
+// como hace el propio SCM, y se queda con la primera que existe.
+func TestServiceExeCandidates(t *testing.T) {
+	casos := []struct {
+		nombre  string
+		entrada string
+		quiero  []string
+	}{
+		{"el caso real: entre comillas, una sola candidata", binViejo, []string{exeViejo}},
+		{"entre comillas sin argumentos", `"` + exeNuevo + `"`, []string{exeNuevo}},
+
+		// Sin comillas y con espacios en la ruta: el corte cae en medio del
+		// nombre del directorio y sólo el disco puede decir cuál es la buena.
+		// El orden va de la más corta a la más larga, igual que Windows.
+		{"sin comillas, con espacios en la ruta", `C:\Program Files\ObserverAgent\observeragent.exe -m svc`, []string{
+			`C:\Program`,
+			`C:\Program Files\ObserverAgent\observeragent.exe`,
+			`C:\Program Files\ObserverAgent\observeragent.exe -m`,
+			`C:\Program Files\ObserverAgent\observeragent.exe -m svc`,
+		}},
+
+		{"sin comillas ni espacios en la ruta", `C:\obs\observeragent.exe -m svc`, []string{
+			`C:\obs\observeragent.exe`,
+			`C:\obs\observeragent.exe -m`,
+			`C:\obs\observeragent.exe -m svc`,
+		}},
+
+		{"sin comillas ni argumentos", `C:\obs\observeragent.exe`, []string{`C:\obs\observeragent.exe`}},
+		{"comilla sin cerrar", `"C:\obs\observeragent.exe`, []string{`C:\obs\observeragent.exe`}},
+		{"vacío", "", nil},
+		{"sólo espacios", "   ", nil},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			got := serviceExeCandidates(c.entrada)
+			if len(got) != len(c.quiero) {
+				t.Fatalf("serviceExeCandidates(%q) = %q, quería %q", c.entrada, got, c.quiero)
+			}
+			for i := range got {
+				if got[i] != c.quiero[i] {
+					t.Fatalf("serviceExeCandidates(%q) = %q, quería %q", c.entrada, got, c.quiero)
+				}
+			}
+		})
+	}
+}
+
 func TestParseServiceExePath(t *testing.T) {
 	casos := []struct {
 		nombre    string
@@ -88,29 +137,41 @@ func TestStaleDirNameLooksRight(t *testing.T) {
 }
 
 func TestReplaceServiceExePath(t *testing.T) {
+	sinComillas := `C:\Program Files (x86)\ObserverAgent\observeragent.exe -m svc`
+
 	casos := []struct {
 		nombre  string
 		entrada string
-		exe     string
+		viejo   string
+		nuevo   string
 		quiero  string
 	}{
 		// El caso que repara la flota: cambia la ruta y `-m svc` queda intacto.
 		// Si los argumentos se perdieran, el servicio arrancaría el agente sin
 		// modo y no levantaría el RPC.
-		{"el caso real", binViejo, exeNuevo, `"` + exeNuevo + `" -m svc`},
+		{"el caso real", binViejo, exeViejo, exeNuevo, `"` + exeNuevo + `" -m svc`},
 
-		{"sin argumentos", `"` + exeViejo + `"`, exeNuevo, `"` + exeNuevo + `"`},
-		{"sin comillas, con argumentos", `C:\obs\observeragent.exe -m svc`, exeNuevo, `"` + exeNuevo + `" -m svc`},
-		{"sin comillas ni argumentos", `C:\obs\observeragent.exe`, exeNuevo, `"` + exeNuevo + `"`},
-		{"con espacios alrededor", "  " + binViejo + "  ", exeNuevo, `"` + exeNuevo + `" -m svc`},
-		{"argumentos poco habituales se conservan tal cual", `"` + exeViejo + `" -m svc --debug`, exeNuevo, `"` + exeNuevo + `" -m svc --debug`},
-		{"entrada vacía", "", exeNuevo, `"` + exeNuevo + `"`},
+		// El que antes producía basura: sin comillas y con espacios. Ahora el
+		// ejecutable viejo llega YA resuelto contra el disco, así que el resto
+		// que se conserva es el de verdad y no un pedazo de la ruta.
+		{"sin comillas y con espacios, ya desambiguado", sinComillas, exeViejo, exeNuevo, `"` + exeNuevo + `" -m svc`},
+
+		{"sin argumentos", `"` + exeViejo + `"`, exeViejo, exeNuevo, `"` + exeNuevo + `"`},
+		{"sin comillas ni espacios", `C:\obs\observeragent.exe -m svc`, `C:\obs\observeragent.exe`, exeNuevo, `"` + exeNuevo + `" -m svc`},
+		{"sin comillas ni argumentos", `C:\obs\observeragent.exe`, `C:\obs\observeragent.exe`, exeNuevo, `"` + exeNuevo + `"`},
+		{"con espacios alrededor", "  " + binViejo + "  ", exeViejo, exeNuevo, `"` + exeNuevo + `" -m svc`},
+		{"argumentos poco habituales se conservan tal cual", `"` + exeViejo + `" -m svc --debug`, exeViejo, exeNuevo, `"` + exeNuevo + `" -m svc --debug`},
+		{"entrada vacía", "", "", exeNuevo, `"` + exeNuevo + `"`},
+
+		// Si el ejecutable recibido no es prefijo de la cadena, no hay resto que
+		// se pueda afirmar: se prefiere una línea sin argumentos a una inventada.
+		{"viejo que no calza con la cadena", binViejo, `D:\otro\cosa.exe`, exeNuevo, `"` + exeNuevo + `"`},
 	}
 
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
-			if got := replaceServiceExePath(c.entrada, c.exe); got != c.quiero {
-				t.Errorf("replaceServiceExePath(%q, %q) = %q, quería %q", c.entrada, c.exe, got, c.quiero)
+			if got := replaceServiceExePath(c.entrada, c.viejo, c.nuevo); got != c.quiero {
+				t.Errorf("replaceServiceExePath(%q, %q, %q) = %q, quería %q", c.entrada, c.viejo, c.nuevo, got, c.quiero)
 			}
 		})
 	}
@@ -121,7 +182,7 @@ func TestReplaceServiceExePath(t *testing.T) {
 // configuración del servicio ahí sería trabajo —y riesgo— sin motivo.
 func TestReplaceServiceExePathEsIdentidadCuandoYaCoincide(t *testing.T) {
 	bin := `"` + exeNuevo + `" -m svc`
-	if got := replaceServiceExePath(bin, exeNuevo); got != bin {
-		t.Errorf("replaceServiceExePath(%q, %q) = %q, quería la misma cadena", bin, exeNuevo, got)
+	if got := replaceServiceExePath(bin, exeNuevo, exeNuevo); got != bin {
+		t.Errorf("replaceServiceExePath(%q, %q, %q) = %q, quería la misma cadena", bin, exeNuevo, exeNuevo, got)
 	}
 }

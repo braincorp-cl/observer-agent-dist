@@ -3,107 +3,132 @@ package agent
 import "strings"
 
 // Decisiones puras del reapuntado del servicio: parseo del BinaryPathName y la
-// guarda de nombre del directorio huérfano.
+// guarda de nombre del directorio que se borra al desinstalar.
 //
 // Viven en un archivo sin restricción de plataforma —y no junto al resto del
 // código de servicios— porque son lógica sin E/S y así quedan cubiertas por los
 // tests, que corren en Linux.
 //
 // De esto cuelga si un equipo con las rutas divergidas se repara o se queda
-// ejecutando el binario viejo para siempre, y también un os.RemoveAll. Conviene
-// que tengan tests y no sólo una corrida en terreno.
+// ejecutando el binario viejo para siempre. Conviene que tenga tests y no sólo
+// una corrida en terreno.
 
-// parseServiceExePath extrae el ejecutable de un BinaryPathName y dice si el
-// parseo es CONFIABLE.
+// serviceExeCandidates devuelve las rutas que podrían ser el ejecutable dentro
+// de un BinaryPathName, de la más corta a la más larga.
 //
-// El segundo valor no es un adorno. Windows admite registrar el servicio sin
-// comillas aunque la ruta tenga espacios, y entonces «C:\Program Files\...» es
-// indistinguible de un ejecutable «C:\Program» con argumentos: el SCM lo resuelve
-// probando candidatos contra el disco, cosa que acá no se puede replicar. Cuando
-// la cadena es ambigua se devuelve false y quien llama debe abstenerse de
-// reescribir: preferimos no tocar un servicio antes que dejarlo con una línea de
-// comandos inventada.
-func parseServiceExePath(binPath string) (string, bool) {
+// Con la ruta entre comillas hay una sola candidata y no hay nada que adivinar.
+// Sin comillas, en cambio, Windows admite igual una ruta con espacios: entonces
+// `C:\Program Files\ObserverAgent\observeragent.exe -m svc` es indistinguible de
+// un ejecutable `C:\Program` con tres argumentos. El SCM resuelve la ambigüedad
+// probando las candidatas contra el disco, de la más corta a la más larga, y
+// quien llame a esta función debe hacer lo mismo.
+//
+// Devolver la lista en vez de una respuesta es lo que permite tener la parte
+// difícil —cuáles son las candidatas y en qué orden— probada en Linux, y dejar
+// del lado de Windows sólo el «¿existe este archivo?».
+func serviceExeCandidates(binPath string) []string {
 	binPath = strings.TrimSpace(binPath)
 	if binPath == "" {
-		return "", false
+		return nil
 	}
 
 	if strings.HasPrefix(binPath, `"`) {
-		end := strings.Index(binPath[1:], `"`)
-		if end < 0 {
-			// Comilla de apertura sin cierre: la ruta está malformada y no hay
-			// forma honesta de saber dónde termina.
-			return strings.TrimPrefix(binPath, `"`), false
+		if end := strings.Index(binPath[1:], `"`); end >= 0 {
+			return []string{binPath[1 : end+1]}
 		}
-		return binPath[1 : end+1], true
+		// Comilla de apertura sin cierre: la ruta está malformada. Se ofrece lo
+		// que hay, sin la comilla, y que el disco decida.
+		return []string{strings.TrimPrefix(binPath, `"`)}
 	}
 
-	sp := strings.Index(binPath, " ")
+	out := make([]string, 0, 4)
+	for i := 0; i < len(binPath); i++ {
+		if binPath[i] == ' ' {
+			if cand := strings.TrimSpace(binPath[:i]); cand != "" {
+				out = append(out, cand)
+			}
+		}
+	}
+	return append(out, binPath)
+}
+
+// parseServiceExePath extrae el ejecutable de un BinaryPathName sin mirar el
+// disco, y dice si el parseo es CONFIABLE.
+//
+// Es el último recurso, para cuando ninguna candidata existe en disco y no queda
+// nada contra qué contrastar. Cuando devuelve false, la cadena es ambigua y no
+// hay forma honesta de resolverla.
+func parseServiceExePath(binPath string) (string, bool) {
+	trimmed := strings.TrimSpace(binPath)
+	if trimmed == "" {
+		return "", false
+	}
+
+	if strings.HasPrefix(trimmed, `"`) {
+		if end := strings.Index(trimmed[1:], `"`); end >= 0 {
+			return trimmed[1 : end+1], true
+		}
+		return strings.TrimPrefix(trimmed, `"`), false
+	}
+
+	sp := strings.Index(trimmed, " ")
 	if sp < 0 {
-		return binPath, true
+		return trimmed, true
 	}
 
-	exe := binPath[:sp]
-	rest := strings.TrimSpace(binPath[sp:])
+	exe := trimmed[:sp]
+	rest := strings.TrimSpace(trimmed[sp:])
 
 	// Sin comillas, el primer token sólo es la ruta entera si lo que sigue es un
-	// modificador. Si lo que sigue parece la continuación de la ruta, el corte
-	// cayó en medio del nombre del directorio.
+	// modificador. Si parece la continuación de la ruta, el corte cayó en medio
+	// del nombre del directorio.
 	if strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "/") {
 		return exe, true
 	}
 	return exe, false
 }
 
-// serviceExePath es parseServiceExePath cuando sólo interesa comparar rutas y no
-// reescribirlas.
-func serviceExePath(binPath string) string {
-	exe, _ := parseServiceExePath(binPath)
-	return exe
-}
-
 // replaceServiceExePath cambia el ejecutable de un BinaryPathName y deja los
 // argumentos exactamente como estaban.
+//
+// El ejecutable viejo se recibe ya resuelto en vez de volver a parsearlo: quien
+// llama pudo haberlo desambiguado contra el disco, y re-parsear acá con menos
+// información daría un corte distinto y un resto inventado.
 //
 // Los argumentos no se reconstruyen a propósito: `-m svc` es lo que pone
 // kardianos/service hoy, pero si un servicio quedó registrado con otra cosa,
 // reescribirlo cambiaría su comportamiento sin que nadie lo haya pedido. Acá se
 // corrige una ruta, nada más.
-//
-// Sólo debe llamarse cuando parseServiceExePath dio confiable: con una cadena
-// ambigua, el resto que se conserva incluiría el pedazo de ruta que quedó
-// cortado, y el servicio arrancaría con un argumento posicional basura que hace
-// que Go deje de leer `-m svc`.
-func replaceServiceExePath(binPath, exe string) string {
+func replaceServiceExePath(binPath, oldExe, newExe string) string {
 	trimmed := strings.TrimSpace(binPath)
-	old := serviceExePath(trimmed)
-	if old == "" {
-		return quoteExe(exe)
+	if oldExe == "" {
+		return quoteExe(newExe)
 	}
 
-	rest := strings.TrimPrefix(trimmed, `"`+old+`"`)
+	rest := strings.TrimPrefix(trimmed, `"`+oldExe+`"`)
 	if rest == trimmed {
-		rest = strings.TrimPrefix(trimmed, old)
+		rest = strings.TrimPrefix(trimmed, oldExe)
+	}
+	if rest == trimmed {
+		// El ejecutable no era prefijo de la cadena: no hay resto que conservar
+		// que se pueda afirmar sin inventar.
+		return quoteExe(newExe)
 	}
 	rest = strings.TrimSpace(rest)
 
 	if rest == "" {
-		return quoteExe(exe)
+		return quoteExe(newExe)
 	}
-	return quoteExe(exe) + " " + rest
+	return quoteExe(newExe) + " " + rest
 }
 
 func quoteExe(exe string) string {
 	return `"` + exe + `"`
 }
 
-// staleDirNameLooksRight es la guarda de nombre del directorio que se va a
-// borrar: sólo se acepta uno que se llame como el directorio de instalación del
-// agente.
-//
-// Es la última línea entre una ruta leída de la configuración de un servicio
-// —que puede ser cualquier cosa— y un os.RemoveAll.
+// staleDirNameLooksRight es la guarda de nombre del directorio que se borra al
+// desinstalar: sólo se acepta uno que se llame como el directorio de instalación
+// del agente.
 func staleDirNameLooksRight(dir string) bool {
 	return strings.EqualFold(windowsBase(dir), progFilesName)
 }

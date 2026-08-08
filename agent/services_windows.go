@@ -242,18 +242,30 @@ func WaitForService(name string, status string, retries int) {
 	}
 }
 
-// reconcileServiceExe reapunta el servicio al binario que el agente tiene por
-// suyo, cuando el registrado es otro.
+// ReconcileService reapunta el servicio al binario que el agente tiene por suyo,
+// cuando el registrado es otro.
 //
 // Es la reparación de los equipos que ya quedaron con las dos rutas divergidas:
 // el servicio ejecutando `C:\Program Files (x86)\ObserverAgent` mientras el
 // instalador escribe en `C:\Program Files\ObserverAgent`. Corre dentro de la
-// actualización normal, con el servicio ya detenido por InitializeSetup, así que
-// esos equipos se sanan con un solo salto de versión y sin reinstalar a mano.
+// actualización normal, así que esos equipos se sanan con un solo salto de
+// versión y sin reinstalar a mano.
 //
 // En una instalación sana no hace nada: las dos rutas coinciden y retorna sin
 // tocar el servicio.
-func (a *Agent) reconcileServiceExe() error {
+//
+// NO BORRA NADA, y eso es deliberado. La versión anterior eliminaba acá mismo el
+// directorio que quedaba huérfano, en el peor momento posible: a mitad de una
+// actualización desatendida, con el servicio recién matado a taskkill y sin
+// nadie mirando. Cuatro modos de falla salían de esa sola decisión —entre ellos
+// dejar sin CWD a todas las tareas programadas del equipo, que `tasks_windows.go`
+// grabó apuntando al `ProgramDir` viejo—. El directorio se elimina al
+// DESINSTALAR, en `UninstallCleanup`, donde ya nadie lo necesita.
+func (a *Agent) ReconcileService() error {
+	if !serviceExists(winSvcName) {
+		return nil
+	}
+
 	conn, err := mgr.Connect()
 	if err != nil {
 		return err
@@ -271,21 +283,18 @@ func (a *Agent) reconcileServiceExe() error {
 		return err
 	}
 
-	oldExe, unambiguous := parseServiceExePath(conf.BinaryPathName)
-	if oldExe == "" || strings.EqualFold(filepath.Clean(oldExe), filepath.Clean(a.EXE)) {
+	oldExe := resolveServiceExe(conf.BinaryPathName)
+	if oldExe == "" {
+		a.Logger.Errorln("No se pudo determinar el ejecutable del servicio, no se reapunta:", conf.BinaryPathName)
 		return nil
 	}
-	if !unambiguous {
-		// Una ruta sin comillas y con espacios no se puede reescribir sin
-		// riesgo de inventar un argumento. Se deja el servicio como está.
-		a.Logger.Errorln("El BinaryPathName del servicio es ambiguo, no se reapunta:", conf.BinaryPathName)
+	if strings.EqualFold(filepath.Clean(oldExe), filepath.Clean(a.EXE)) {
 		return nil
 	}
 
 	// El destino tiene que existir ANTES de reapuntar. Si no, esta función
-	// dejaría el servicio mirando a un binario inexistente y —peor— borraría a
-	// continuación el directorio donde sí estaba el agente: la máquina quedaría
-	// sin agente, sin desinstalador y sin forma de volver desde la consola.
+	// dejaría el servicio mirando a un binario inexistente: la máquina quedaría
+	// sin agente y sin forma de volver desde la consola.
 	//
 	// Pasa cuando `-m installsvc` corre desde una carpeta cualquiera en un equipo
 	// instalado con /DIR: ahí no hay `unins*.exe` que reconocer ni `InstallDir`
@@ -297,66 +306,93 @@ func (a *Agent) reconcileServiceExe() error {
 
 	a.Logger.Infof("El servicio apunta a %s pero el agente está instalado en %s; reapuntando.", oldExe, a.EXE)
 
-	conf.BinaryPathName = replaceServiceExePath(conf.BinaryPathName, a.EXE)
+	conf.BinaryPathName = replaceServiceExePath(conf.BinaryPathName, oldExe, a.EXE)
 	if err := srv.UpdateConfig(conf); err != nil {
 		return err
 	}
 
-	a.cleanupStaleProgramDir(filepath.Dir(oldExe))
+	a.rescueMeshInstaller(filepath.Dir(oldExe))
 	return nil
 }
 
-// cleanupStaleProgramDir borra el directorio de instalación que quedó huérfano
-// después de reapuntar el servicio.
+// rescueMeshInstaller copia `meshagent.exe` desde el directorio viejo al nuevo.
 //
-// Antes de borrarlo rescata `meshagent.exe`: es lo único que no se vuelve a
-// bajar solo. Python, nushell y deno los redescarga el agente cuando los
-// necesita, y el desinstalador de Inno Setup no vive acá sino en `{app}`.
+// Es lo único del directorio viejo que hace falta traer: en un equipo divergente
+// esa es la ÚNICA copia de la máquina —`install.go` la descargó al ProgramDir de
+// entonces, y el `[Files]` del instalador sólo trae el binario del agente—, y de
+// ella depende que el `[UninstallRun] {app}\meshagent.exe -fulluninstall` corte
+// el acceso remoto al desinstalar. Python, nushell y deno se redescargan solos
+// cuando el agente los necesita.
 //
-// Las guardas no son paranoia decorativa: esta función recibe una ruta derivada
-// de la configuración de un servicio y termina en un RemoveAll.
-func (a *Agent) cleanupStaleProgramDir(dir string) {
-	if dir == "" || strings.EqualFold(filepath.Clean(dir), filepath.Clean(a.ProgramDir)) {
-		return
-	}
-	if !staleDirNameLooksRight(dir) {
-		a.Logger.Debugln("cleanupStaleProgramDir(): ruta inesperada, no se borra:", dir)
+// Copia y no mueve, a propósito: si la copia falla, el original sigue donde
+// estaba y la recuperación manual sigue siendo posible.
+func (a *Agent) rescueMeshInstaller(oldDir string) {
+	if oldDir == "" || sameDir(oldDir, a.ProgramDir) {
 		return
 	}
 
-	// Comparar las cadenas no alcanza para saber si son directorios distintos.
-	// `C:\PROGRA~1\ObserverAgent` y `C:\Program Files\ObserverAgent` son el MISMO
-	// directorio escrito de dos formas, y un servicio puede haber quedado
-	// registrado con la forma corta 8.3; lo mismo vale para una unión (junction)
-	// o una unidad creada con subst. Sin esta comprobación, el RemoveAll se
-	// llevaría la instalación viva que se acaba de dejar como buena.
-	if sameDir(dir, a.ProgramDir) {
-		a.Logger.Debugln("cleanupStaleProgramDir(): es el mismo directorio por otro nombre, no se borra:", dir)
-		return
-	}
-
-	// Un directorio con `unins*.exe` es una instalación de Inno Setup con su
-	// entrada viva en «Agregar o quitar programas». Borrarlo dejaría la entrada
-	// apuntando a un desinstalador que ya no existe —el residuo en ARP que
-	// justamente se persigue en amd64— y `AgentUninstall` fallaría en silencio
-	// para siempre. Si aparece uno acá, hay que mirarlo, no borrarlo.
-	if hasInnoUninstaller(dir) {
-		a.Logger.Errorln("cleanupStaleProgramDir(): el directorio huérfano tiene desinstalador de Inno Setup, no se borra:", dir)
-		return
-	}
-
-	stale := filepath.Join(dir, a.MeshInstaller)
+	src := filepath.Join(oldDir, a.MeshInstaller)
 	dst := filepath.Join(a.ProgramDir, a.MeshInstaller)
-	if rmm.FileExists(stale) && !rmm.FileExists(dst) {
-		if err := copyFile(stale, dst); err != nil {
-			a.Logger.Errorln("cleanupStaleProgramDir() copia del instalador de mesh:", err)
+	if !rmm.FileExists(src) || rmm.FileExists(dst) {
+		return
+	}
+
+	if err := copyFile(src, dst); err != nil {
+		a.Logger.Errorln("rescueMeshInstaller():", err)
+		return
+	}
+	a.Logger.Infoln("Instalador de mesh rescatado del directorio viejo:", src)
+}
+
+// removeLegacyProgramDir borra el directorio que dejó la divergencia 386 × x64.
+//
+// Corre SÓLO al desinstalar. Ahí ya nadie lo necesita: el servicio se está
+// yendo, `CleanupSchedTasks` borra las tareas que lo tenían como WorkingDir y el
+// mesh se desinstala por su cuenta. Durante una actualización, en cambio,
+// borrarlo rompía cosas vivas.
+//
+// La ruta es CALCULADA, no leída de la configuración de un servicio: es
+// exactamente el `%ProgramFiles%\ObserverAgent` que el código viejo usaba como
+// ProgramDir, que bajo WOW64 es `C:\Program Files (x86)\ObserverAgent`. En amd64
+// y en Windows de 32 bits genuino coincide con el directorio vivo y no se toca.
+func (a *Agent) removeLegacyProgramDir() {
+	legacy := defaultProgramDir()
+	if sameDir(legacy, a.ProgramDir) || !rmm.FileExists(legacy) {
+		return
+	}
+	if !staleDirNameLooksRight(legacy) {
+		return
+	}
+
+	a.Logger.Infoln("Borrando el directorio de instalación que dejó la divergencia 386 × x64:", legacy)
+	if err := os.RemoveAll(legacy); err != nil {
+		a.Logger.Errorln("removeLegacyProgramDir():", err)
+	}
+}
+
+// resolveServiceExe averigua cuál es el ejecutable de un BinaryPathName,
+// resolviendo contra el disco la ambigüedad que la cadena no resuelve.
+//
+// Hace lo mismo que el propio SCM: prueba las candidatas de la más corta a la
+// más larga y se queda con la primera que existe. Importa porque un
+// `sc config observeragent binpath= C:\Program Files\...\observeragent.exe -m svc`
+// sin comillas —el remedio que aplicaría a mano un administrador que vio el
+// defecto— dejaba al equipo permanentemente fuera del alcance de la reparación:
+// la condición no cambia sola y no hay ninguna otra ruta en el producto que
+// vuelva a ejercitar el update.
+func resolveServiceExe(binPath string) string {
+	for _, cand := range serviceExeCandidates(binPath) {
+		if rmm.FileExists(cand) {
+			return cand
 		}
 	}
 
-	a.Logger.Infoln("Borrando el directorio de instalación huérfano:", dir)
-	if err := os.RemoveAll(dir); err != nil {
-		a.Logger.Errorln("cleanupStaleProgramDir() RemoveAll:", err)
+	// Ninguna existe: el binario registrado ya no está. Queda el parseo
+	// sintáctico, que acierta salvo con rutas con espacios y sin comillas.
+	if exe, ok := parseServiceExePath(binPath); ok {
+		return exe
 	}
+	return ""
 }
 
 func serviceExists(name string) bool {

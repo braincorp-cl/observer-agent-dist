@@ -1020,3 +1020,5 @@ func (a *Agent) Start(_ service.Service) error { return nil }
 func (a *Agent) Stop(_ service.Service) error { return nil }
 
 func (a *Agent) InstallService() error { return nil }
+
+func (a *Agent) ReconcileService() error { return nil }

@@ -27,39 +27,74 @@ const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
 // es lo que hace esta implementación. Con eso el agente de 32 bits reporta las
 // dos vistas, igual que el de 64 bits.
 //
-// El segundo valor de retorno es la cantidad de subclaves que no se pudieron
-// leer. Se devuelve en vez de tragarse: un inventario corto sin explicación es
-// el mismo modo de falla silencioso que este archivo está corrigiendo.
-func installedSoftwareList() ([]so.Software, int, error) {
-	if !isWow64() {
+// Lo que se devuelve además de la lista es para que ningún faltante quede mudo:
+// la cantidad de subclaves ilegibles y los errores de cada vista. Un inventario
+// corto sin explicación es el mismo modo de falla silencioso que este archivo
+// está corrigiendo, así que las fallas parciales se reportan en vez de tragarse.
+//
+// Y una vista que falla NO descarta la otra: son dos lecturas independientes.
+// Devolver nil porque una de las dos falló convertía «faltan 97 de 424» en «cero
+// programas instalados», que es peor: el servidor reemplaza el inventario de la
+// máquina por nada y en la consola se lee como si no tuviera software.
+func installedSoftwareList() ([]so.Software, int, []error) {
+	var errs []error
+
+	wow64, err := isWow64()
+	if err != nil {
+		// No se pudo averiguar. Se sigue por la rama de vista única, que es lo
+		// único que se puede hacer, pero el error se reporta: si esto pasara en
+		// un x64, el agente volvería a leer sólo la vista redirigida y a
+		// reportar 97 de 424 claves sin que nada lo delatara.
+		errs = append(errs, fmt.Errorf("no se pudo determinar si el proceso corre bajo WOW64: %s", err.Error()))
+	}
+
+	if !wow64 {
 		// Windows de 32 bits genuino: hay una sola vista y las banderas WOW64 no
 		// significan nada. Pedir las dos devolvería el mismo listado dos veces.
-		return getSoftwareList(uninstallKey, "X32", 0)
+		list, skipped, err := getSoftwareList(uninstallKey, "X32", 0)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return list, skipped, errs
 	}
+
+	list := make([]so.Software, 0)
+	skipped := 0
 
 	sw64, skipped64, err := getSoftwareList(uninstallKey, "X64", registry.WOW64_64KEY)
 	if err != nil {
-		return nil, 0, err
-	}
-	sw32, skipped32, err := getSoftwareList(uninstallKey, "X32", registry.WOW64_32KEY)
-	if err != nil {
-		return nil, 0, err
+		errs = append(errs, fmt.Errorf("vista de 64 bits: %s", err.Error()))
+	} else {
+		list = append(list, sw64...)
+		skipped += skipped64
 	}
 
-	return append(sw64, sw32...), skipped64 + skipped32, nil
+	sw32, skipped32, err := getSoftwareList(uninstallKey, "X32", registry.WOW64_32KEY)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("vista de 32 bits: %s", err.Error()))
+	} else {
+		list = append(list, sw32...)
+		skipped += skipped32
+	}
+
+	return list, skipped, errs
 }
 
 // isWow64 responde si este proceso de 32 bits corre sobre un Windows de 64 bits.
 //
+// Devuelve el error en vez de colapsarlo en false: «Windows de 32 bits genuino»
+// y «no se pudo averiguar» llevan a la misma rama pero no son lo mismo, y
+// confundirlos reintroduce el defecto sin dejar rastro.
+//
 // Se usa IsWow64Process y no IsWow64Process2: la segunda existe recién desde
 // Windows 10, y este binario es justamente el de la pata legacy, que tiene que
 // correr en Windows 7 (ADR-023).
-func isWow64() bool {
+func isWow64() (bool, error) {
 	var wow64 bool
 	if err := windows.IsWow64Process(windows.CurrentProcess(), &wow64); err != nil {
-		return false
+		return false, err
 	}
-	return wow64
+	return wow64, nil
 }
 
 func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, int, error) {
@@ -144,10 +179,9 @@ func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, int
 func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
 	ret := make([]ormm.WinSoftwareList, 0)
 
-	sw, skipped, err := installedSoftwareList()
-	if err != nil {
-		a.Logger.Errorln("GetInstalledSoftware():", err)
-		return ret
+	sw, skipped, errs := installedSoftwareList()
+	for _, e := range errs {
+		a.Logger.Errorln("GetInstalledSoftware():", e)
 	}
 	if skipped > 0 {
 		a.Logger.Errorf("GetInstalledSoftware(): %d subclaves del registro no se pudieron leer; el inventario va incompleto.", skipped)

@@ -97,18 +97,14 @@ Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunO
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}";
 Type: filesandordirs; Name: "{#MESHDIR}";
-; El Mesh Agent de 32 bits se instala solo, en la vista de 32 bits: sobre un
-; Windows x64 eso es "C:\Program Files (x86)\Mesh Agent", que la línea de arriba
-; no toca. En un Windows de 32 bits genuino {commonpf32} vale lo mismo que
-; {#MESHDIR} y esta línea es redundante.
-;
-; Es la MISMA suposición de propiedad exclusiva que ya hace la línea de arriba
-; desde siempre: que el "Mesh Agent" del equipo es el nuestro. Si un día conviven
-; dos productos basados en MeshCentral en la misma máquina, las dos líneas
-; sobran, no sólo ésta —y el choque empezaría antes, en el nombre del servicio—.
-; No está medido que sea el caso en la flota; queda dicho para que nadie lo lea
-; como si lo estuviera.
-Type: filesandordirs; Name: "{commonpf32}\Mesh Agent";
+; NO agregar acá "{commonpf32}\Mesh Agent", que es donde queda el Mesh Agent de
+; 32 bits sobre un Windows x64 (medido en terreno). Se probó y se retiró: quien
+; desregistra el nodo es el `-fulluninstall` del [UninstallRun] de arriba, y si
+; ESE falla, borrar el directorio se lleva el único binario con el que se puede
+; reintentar a mano. El equipo quedaría con el servicio "Mesh Agent" registrado
+; apuntando a un ejecutable inexistente y el nodo vivo en MeshCentral, sin
+; recuperación local posible. Dejar el directorio en pie es el comportamiento
+; recuperable; borrarlo, el irreversible.
 
 [Code]
 function InitializeSetup(): boolean;

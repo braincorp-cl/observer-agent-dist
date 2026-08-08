@@ -79,7 +79,20 @@ func main() {
 	case "nixmeshnodeid":
 		fmt.Print(a.NixMeshNodeID())
 	case "installsvc":
-		a.InstallService()
+		// El código de salida IMPORTA acá y no es decorativo. Inno Setup corre
+		// esto en DeinitializeSetup y registra `install service: <ResultCode>`:
+		// si el error se descarta, una máquina reparada y una que sigue rota
+		// producen exactamente el mismo log y el mismo 0, y el bucle de descarga
+		// horaria continúa sin que nadie pueda saber en cuáles equipos surtió
+		// efecto la actualización.
+		if err := a.InstallService(); err != nil {
+			a.Logger.Errorln("installsvc InstallService():", err)
+			os.Exit(1)
+		}
+		if err := a.ReconcileService(); err != nil {
+			a.Logger.Errorln("installsvc ReconcileService():", err)
+			os.Exit(1)
+		}
 	case "checkin":
 		a.DoNatsCheckIn()
 	case "rpc":
