@@ -724,21 +724,9 @@ func (a *Agent) SystemRebootRequired() (bool, error) {
 }
 
 func (a *Agent) SendSoftware() {
-	sw, complete := a.GetInstalledSoftware()
+	sw := a.GetInstalledSoftware()
 	a.Logger.Debugln(sw)
 
-	// Un inventario POCO CONFIABLE no se envía. El servidor reemplaza el de la
-	// máquina con lo que llegue, así que una lectura fallida borra lo que ya
-	// sabía y en la consola se lee como un hecho del equipo en vez de como un
-	// error.
-	//
-	// No alcanza con rechazar la lista vacía: una lectura de una sola vista bajo
-	// WOW64 devuelve ~97 de 424 entradas, que no está vacía en absoluto y es
-	// justamente el subconteo silencioso que se está corrigiendo.
-	if !complete {
-		a.Logger.Errorln("SendSoftware(): el inventario está incompleto; no se envía para no reemplazar el del servidor con una lista corta.")
-		return
-	}
 	if len(sw) == 0 {
 		a.Logger.Errorln("SendSoftware(): el inventario salió vacío; no se envía para no borrar el que tiene el servidor.")
 		return
@@ -772,10 +760,6 @@ func (a *Agent) UninstallCleanup() {
 	CleanupSchedTasks()
 	os.RemoveAll(a.WinTmpDir)
 	os.RemoveAll(a.WinRunAsUserTmpDir)
-
-	// Después de CleanupSchedTasks, no antes: las tareas de un equipo con las
-	// rutas divergidas tienen ese directorio como WorkingDir.
-	a.removeLegacyProgramDir()
 }
 
 func (a *Agent) AgentUpdate(url, inno, version string) error {

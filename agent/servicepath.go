@@ -2,8 +2,8 @@ package agent
 
 import "strings"
 
-// Decisiones puras del reapuntado del servicio: parseo del BinaryPathName y la
-// guarda de nombre del directorio que se borra al desinstalar.
+// Decisiones puras del reapuntado del servicio: el parseo del BinaryPathName y
+// el reconocimiento del binario del agente por su nombre.
 //
 // Viven en un archivo sin restricción de plataforma —y no junto al resto del
 // código de servicios— porque son lógica sin E/S y así quedan cubiertas por los
@@ -124,13 +124,6 @@ func replaceServiceExePath(binPath, oldExe, newExe string) string {
 
 func quoteExe(exe string) string {
 	return `"` + exe + `"`
-}
-
-// staleDirNameLooksRight es la guarda de nombre del directorio que se borra al
-// desinstalar: sólo se acepta uno que se llame como el directorio de instalación
-// del agente.
-func staleDirNameLooksRight(dir string) bool {
-	return strings.EqualFold(windowsBase(dir), progFilesName)
 }
 
 // looksLikeAgentExe es la mitad barata de «¿esta ruta es el binario del agente?»:

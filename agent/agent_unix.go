@@ -21,10 +21,10 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jaypipes/ghw"
 	"github.com/kardianos/service"
+	nats "github.com/nats-io/nats.go"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	psHost "github.com/shirou/gopsutil/v3/host"
-	nats "github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
 )
 
@@ -957,13 +957,7 @@ func (a *Agent) EditService(name, startupType string) rmm.WinSvcResp {
 	return rmm.WinSvcResp{Success: false, ErrorMsg: "/na"}
 }
 
-// Fuera de Windows no hay inventario de software que leer, así que la lista
-// vacía es la respuesta CORRECTA y completa: el segundo valor es `true`. Si
-// dijera `false`, los consumidores —que se niegan a enviar un inventario poco
-// confiable— dejarían de responder en Linux y macOS.
-func (a *Agent) GetInstalledSoftware() ([]rmm.WinSoftwareList, bool) {
-	return []rmm.WinSoftwareList{}, true
-}
+func (a *Agent) GetInstalledSoftware() []rmm.WinSoftwareList { return []rmm.WinSoftwareList{} }
 
 func (a *Agent) ChecksRunning() bool { return false }
 

@@ -176,19 +176,16 @@ func getSoftwareList(baseKey, arch string, wow64Flag uint32) ([]so.Software, int
 	return swList, skipped, nil
 }
 
-// GetInstalledSoftware devuelve el inventario y si es CONFIABLE.
+// GetInstalledSoftware arma el inventario y DEJA RASTRO de lo que no se pudo
+// leer.
 //
-// El segundo valor no es opcional ni decorativo: el servidor REEMPLAZA el
-// inventario de la máquina con lo que llegue, así que enviar una lista corta es
-// peor que no enviar nada. Un admin que audite software desde la consola
-// —buscando por ejemplo una versión vulnerable de un producto de 64 bits— vería
-// la máquina limpia sin ninguna marca de que la lectura falló; el único rastro
-// sería un `Errorln` en el `agent.log` de ese equipo.
-//
-// Que la lista NO esté vacía no basta para creerle: si `isWow64` falla se cae a
-// la rama de vista única, que bajo WOW64 devuelve ~97 de 424 entradas y no está
-// vacía en absoluto.
-func (a *Agent) GetInstalledSoftware() ([]ormm.WinSoftwareList, bool) {
+// No se filtra ni se retiene la lista por incompleta: se probó gatillar sobre
+// `errs`/`skipped` y resultó peor que el defecto: una sola subclave del Uninstall
+// con ACL restrictiva apagaba el inventario del equipo para siempre, y en los dos
+// caminos a la vez. Reportar lo que se leyó y registrar lo que faltó es la
+// conducta correcta; decidir qué hacer con un inventario parcial es del servidor,
+// que es quien ve la flota entera.
+func (a *Agent) GetInstalledSoftware() []ormm.WinSoftwareList {
 	ret := make([]ormm.WinSoftwareList, 0)
 
 	sw, skipped, errs := installedSoftwareList()
@@ -198,7 +195,6 @@ func (a *Agent) GetInstalledSoftware() ([]ormm.WinSoftwareList, bool) {
 	if skipped > 0 {
 		a.Logger.Errorf("GetInstalledSoftware(): %d subclaves del registro no se pudieron leer; el inventario va incompleto.", skipped)
 	}
-	complete := len(errs) == 0 && skipped == 0
 
 	for _, s := range sw {
 		t := s.InstallDate
@@ -213,5 +209,5 @@ func (a *Agent) GetInstalledSoftware() ([]ormm.WinSoftwareList, bool) {
 			Uninstall:   CleanString(s.UninstallString),
 		})
 	}
-	return ret, complete
+	return ret
 }

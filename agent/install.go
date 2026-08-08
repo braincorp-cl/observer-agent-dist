@@ -397,15 +397,6 @@ func (a *Agent) Install(i *Installer) {
 	a.installerMsg("Installation was successful!\nAllow a few minutes for the agent to properly display in the RMM", "info", i.Silent)
 }
 
-// copyFile copia un archivo de forma ATÓMICA: escribe en un temporal del mismo
-// directorio y sólo al final lo renombra sobre el destino.
-//
-// La versión anterior hacía `os.Create(dst)` y después `io.Copy`, así que una
-// copia interrumpida —disco lleno, error de E/S, antivirus reteniendo el origen—
-// dejaba en el destino un archivo truncado o de cero bytes. Con `meshagent.exe`
-// eso es caro dos veces: el destino truncado hace que la guarda `FileExists(dst)`
-// dé por hecho el rescate y no se reintente nunca, y al desinstalar se ejecuta un
-// binario corrupto que no desregistra el nodo, con el original ya borrado.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -413,26 +404,15 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".observer-copy-*")
+	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
+	defer out.Close()
 
-	// Si algo falla de acá en adelante, el temporal no debe quedar en el disco.
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName)
-	}()
-
-	if _, err := io.Copy(tmp, in); err != nil {
+	_, err = io.Copy(out, in)
+	if err != nil {
 		return err
 	}
-	// Cerrar ANTES del rename: en Windows no se renombra un archivo abierto. El
-	// Close del defer sobre un archivo ya cerrado devuelve error y se ignora.
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpName, dst)
+	return nil
 }

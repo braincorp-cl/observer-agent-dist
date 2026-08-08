@@ -255,13 +255,18 @@ func WaitForService(name string, status string, retries int) {
 // En una instalación sana no hace nada: las dos rutas coinciden y retorna sin
 // tocar el servicio.
 //
-// NO BORRA NADA, y eso es deliberado. La versión anterior eliminaba acá mismo el
-// directorio que quedaba huérfano, en el peor momento posible: a mitad de una
-// actualización desatendida, con el servicio recién matado a taskkill y sin
-// nadie mirando. Cuatro modos de falla salían de esa sola decisión —entre ellos
-// dejar sin CWD a todas las tareas programadas del equipo, que `tasks_windows.go`
-// grabó apuntando al `ProgramDir` viejo—. El directorio se elimina al
-// DESINSTALAR, en `UninstallCleanup`, donde ya nadie lo necesita.
+// NADIE EN ESTE ARCHIVO BORRA NADA, y eso es deliberado. Hubo una versión que
+// eliminaba el directorio huérfano —primero durante la actualización, después al
+// desinstalar— y de esa sola idea salieron la mayoría de los defectos que cuatro
+// rondas de revisión encontraron: borrar el directorio equivocado, borrar el
+// correcto en el momento equivocado, dejar sin CWD a las tareas programadas,
+// llevarse la única copia del `meshagent.exe`. Se retiró entera.
+//
+// Lo que queda es lo que arregla el defecto que duele: el servicio deja de
+// ejecutar un binario viejo. El directorio que sobra queda en disco, que es
+// basura sin efecto sobre el servicio ni sobre el acceso remoto, y en un caso que
+// además NO debería existir: un agente 386 sobre un equipo x64 es una instalación
+// equivocada, no una configuración soportada.
 func (a *Agent) ReconcileService() error {
 	if !serviceExists(winSvcName) {
 		return nil
@@ -316,44 +321,8 @@ func (a *Agent) ReconcileService() error {
 		return err
 	}
 
-	oldDir := filepath.Dir(oldExe)
-	a.rescueMeshInstaller(oldDir)
-	a.refreshStaleAgentBinary(oldDir)
+	a.rescueMeshInstaller(filepath.Dir(oldExe))
 	return nil
-}
-
-// refreshStaleAgentBinary deja también en el directorio viejo una copia del
-// binario nuevo.
-//
-// No es redundancia: `tasks_windows.go` crea cada tarea programada con `Path`
-// RELATIVO (`observeragent.exe`) y `WorkingDir = a.ProgramDir`, y el Programador
-// de tareas resuelve ese nombre contra el WorkingDir **grabado cuando la tarea se
-// creó**. En un equipo divergente eso apunta al directorio viejo, y como el
-// arreglo dejó de borrarlo —a propósito, porque borrarlo mataba las tareas— esas
-// tareas seguirían ejecutando el binario ANTERIOR indefinidamente, sin que
-// ninguna corrección del update alcance a los scripts programados, mientras la
-// consola muestra la máquina como actualizada.
-//
-// Reescribir la definición de cada tarea sería lo «limpio», pero exige recorrer y
-// modificar el Programador de tareas en mitad de una actualización desatendida.
-// Copiar un archivo hace lo mismo y no toca nada del sistema.
-func (a *Agent) refreshStaleAgentBinary(oldDir string) {
-	if oldDir == "" || sameDir(oldDir, a.ProgramDir) {
-		return
-	}
-
-	stale := filepath.Join(oldDir, winExeName)
-	if !isAgentExeFile(stale) {
-		return
-	}
-
-	if err := copyFile(a.EXE, stale); err != nil {
-		// Es esperable que falle si algo lo está ejecutando justo ahora: Windows
-		// no deja sobrescribir un .exe mapeado. No es fatal.
-		a.Logger.Errorln("refreshStaleAgentBinary():", err)
-		return
-	}
-	a.Logger.Infoln("Binario nuevo copiado también al directorio viejo, para las tareas programadas que lo tienen de WorkingDir:", oldDir)
 }
 
 // isAgentExeFile responde si la ruta es un ARCHIVO que se llama como el binario
@@ -404,62 +373,6 @@ func (a *Agent) rescueMeshInstaller(oldDir string) {
 		return
 	}
 	a.Logger.Infoln("Instalador de mesh rescatado del directorio viejo:", src)
-}
-
-// removeLegacyProgramDir borra el directorio que dejó la divergencia 386 × x64.
-//
-// Corre SÓLO al desinstalar. Ahí ya nadie lo necesita: el servicio se está
-// yendo, `CleanupSchedTasks` borra las tareas que lo tenían como WorkingDir y el
-// mesh se desinstala por su cuenta. Durante una actualización, en cambio,
-// borrarlo rompía cosas vivas.
-//
-// La ruta es CALCULADA, no leída de la configuración de un servicio: es
-// exactamente el `%ProgramFiles%\ObserverAgent` que el código viejo usaba como
-// ProgramDir, que bajo WOW64 es `C:\Program Files (x86)\ObserverAgent`. En amd64
-// y en Windows de 32 bits genuino coincide con el directorio vivo y no se toca.
-func (a *Agent) removeLegacyProgramDir() {
-	legacy := defaultProgramDir()
-	if sameDir(legacy, a.ProgramDir) || !rmm.FileExists(legacy) {
-		return
-	}
-	if !staleDirNameLooksRight(legacy) {
-		return
-	}
-
-	// El rescate va ACÁ y no sólo en el camino de actualización. Separar el
-	// rescate del borrado dejó un hueco: una máquina que ya no recibe otro update
-	// —porque ya está en LATEST_AGENT_VER, o porque un admin arregló la ruta del
-	// servicio a mano— nunca pasa por `ReconcileService`, así que su `meshagent.exe`
-	// nunca se rescata… y este borrado se lleva la ÚNICA copia de la máquina. El
-	// `[UninstallRun] {app}\meshagent.exe -fulluninstall` no encontraría nada, el
-	// nodo seguiría vivo en MeshCentral y no quedaría binario local para
-	// desregistrarlo a mano. Rescatar primero es lo que hacía el código anterior,
-	// de forma atómica, y se había perdido al separarlos.
-	a.rescueMeshInstaller(legacy)
-
-	// Un directorio con `unins*.exe` es OTRA instalación de Inno Setup, con su
-	// entrada viva en «Agregar o quitar programas». Pasa en un equipo instalado con
-	// /DIR fuera del directorio por defecto donde además existe un
-	// `%ProgramFiles%\ObserverAgent` por su cuenta. Borrarlo dejaría esa entrada
-	// apuntando a un desinstalador inexistente, imposible de quitar: el mismo
-	// residuo en ARP que se persigue aparte. Esta guarda existía y se perdió al
-	// mover el borrado; vuelve.
-	if hasInnoUninstaller(legacy) {
-		a.Logger.Errorln("removeLegacyProgramDir(): el directorio tiene desinstalador de Inno Setup, es otra instalación y no se borra:", legacy)
-		return
-	}
-
-	// Y tiene que contener el binario del agente. El nombre del directorio solo no
-	// alcanza para afirmar que es nuestro.
-	if !isAgentExeFile(filepath.Join(legacy, winExeName)) {
-		a.Logger.Errorln("removeLegacyProgramDir(): el directorio no contiene el binario del agente, no se borra:", legacy)
-		return
-	}
-
-	a.Logger.Infoln("Borrando el directorio de instalación que dejó la divergencia 386 × x64:", legacy)
-	if err := os.RemoveAll(legacy); err != nil {
-		a.Logger.Errorln("removeLegacyProgramDir():", err)
-	}
 }
 
 // resolveServiceExe averigua cuál es el ejecutable de un BinaryPathName,

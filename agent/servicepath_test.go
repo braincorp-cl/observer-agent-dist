@@ -105,37 +105,6 @@ func TestParseServiceExePath(t *testing.T) {
 	}
 }
 
-// La guarda de nombre es lo último que separa una ruta leída de la configuración
-// de un servicio de un os.RemoveAll.
-func TestStaleDirNameLooksRight(t *testing.T) {
-	casos := []struct {
-		nombre  string
-		entrada string
-		quiero  bool
-	}{
-		{"el directorio huérfano real", `C:\Program Files (x86)\ObserverAgent`, true},
-		{"con barra al final", `C:\Program Files (x86)\ObserverAgent\`, true},
-		{"en otra unidad", `D:\ObserverAgent`, true},
-		{"distinta caja", `C:\Program Files\OBSERVERAGENT`, true},
-
-		{"la raíz del disco", `C:\`, false},
-		{"Program Files entero", `C:\Program Files`, false},
-		{"Windows", `C:\Windows`, false},
-		{"el directorio de Mesh", `C:\Program Files\Mesh Agent`, false},
-		{"un subdirectorio del directorio bueno", `C:\Program Files\ObserverAgent\bin`, false},
-		{"vacío", "", false},
-		{"sólo espacios", "   ", false},
-	}
-
-	for _, c := range casos {
-		t.Run(c.nombre, func(t *testing.T) {
-			if got := staleDirNameLooksRight(c.entrada); got != c.quiero {
-				t.Errorf("staleDirNameLooksRight(%q) = %v, quería %v", c.entrada, got, c.quiero)
-			}
-		})
-	}
-}
-
 // El defecto que esto cierra fue el peor de los tres arreglos: la resolucion
 // contra el disco usaba una comprobacion que devuelve true para DIRECTORIOS, asi
 // que `C:\Program Files` se aceptaba como «el ejecutable» y la reescritura dejaba
