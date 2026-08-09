@@ -454,7 +454,27 @@ jobs:
           if ($instalado) {
             throw "el guard NO bloqueo: el instalador de 32 bits se instalo en un Windows de 64 bits sin instalacion previa. Ese equipo quedaria con la autoactualizacion muerta y el inventario incompleto, sin sintoma visible."
           }
-          Write-Host "OK - el instalador de 32 bits se nego a instalarse de cero en un x64."
+
+          # "No quedo binario en disco" es cierto tanto si el guard aborto limpio
+          # como si el instalador se cayo a pedazos. Hasta el 2026-08-09 el gate
+          # solo miraba eso, y pasaba en verde mientras DeinitializeSetup reventaba
+          # con un "Runtime error" que el usuario veia DESPUES del mensaje que le
+          # explica que hacer. Se afirma sobre el log, que es donde eso se ve.
+          $glog = "$PWD\log-arch-guard.txt"
+          # ${glog} y no $glog — PowerShell lee un `$var:` como calificador de ambito.
+          if (-not (Test-Path $glog)) { throw "el instalador no dejo log en ${glog}: no se puede afirmar COMO aborto." }
+          $gtxt = Get-Content -Raw $glog
+
+          # Control positivo: que el log sea del camino del guard y no de otra cosa.
+          if ($gtxt -notmatch 'ABORTADO') {
+            throw "el log no contiene la marca ABORTADO del guard: no quedo binario en disco, pero por otra razon. Un guard que no bloquea y un instalador que se cae se ven igual desde el disco."
+          }
+          if ($gtxt -match 'raised an exception|Runtime error') {
+            $linea = ($gtxt -split "`n" | Select-String -Pattern 'raised an exception|Runtime error' | Select-Object -First 1)
+            throw "el guard aborto, pero el instalador reventó al salir: $linea. El usuario ve un error crudo justo despues del mensaje que le explica que hacer, y parece un instalador roto."
+          }
+          Write-Host "OK - el instalador de 32 bits se nego a instalarse de cero en un x64,"
+          Write-Host "     y salio limpio: sin excepcion en DeinitializeSetup."
 
       - name: Guardar evidencia
         if: always()

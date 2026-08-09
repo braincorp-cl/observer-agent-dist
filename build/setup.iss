@@ -175,12 +175,18 @@ begin
             (not RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\ObserverRMM'));
 end;
 
+// Inno llama a DeinitializeSetup en TODA salida, también cuando InitializeSetup
+// devuelve False. Este flag es cómo se entera de que no hubo instalación.
+var
+  GuardAborto: Boolean;
+
 function InitializeSetup(): boolean;
 var
   ResultCode: Integer;
 begin
   if ArquitecturaEquivocada() then
   begin
+    GuardAborto := True;
     Log('ABORTADO: instalador de 32 bits (386) sobre un Windows de 64 bits, y sin instalacion previa.');
     SuppressibleMsgBox(
       'Este es el instalador de 32 bits (386) y este equipo es de 64 bits.' + #13#10 + #13#10 +
@@ -207,6 +213,28 @@ var
   ResultCode: Integer;
   WorkingDir:   String;
 begin
+  // Sin esto, abortar el guard de arquitectura termina en un "Runtime error" crudo
+  // en la cara del usuario, justo DESPUÉS del mensaje que le explica qué hacer.
+  // Medido el 2026-08-09 en log-arch-guard.txt (corrida 31291029249):
+  //
+  //   InitializeSetup returned False; aborting.
+  //   Got EAbort exception.
+  //   Deinitializing Setup.
+  //   DeinitializeSetup raised an exception.
+  //   Runtime error (at 9:51):
+  //   Internal error: An attempt was made to expand the "app" constant before it
+  //   was initialized.
+  //
+  // Porque Inno llama a este procedimiento igual, y ahí abajo {app} nunca se
+  // inicializó: no hubo wizard. Nada que instalar, nada que arrancar.
+  //
+  // El flag se pone SOLO en el camino del guard, a propósito. Que este
+  // procedimiento asuma que hubo instalación es un supuesto más amplio —también
+  // corre si el usuario cancela— pero ESO NO ESTÁ MEDIDO, y acá el que decide es
+  // el que atraviesa toda instalación y actualización de la flota Windows: se
+  // toca lo que se probó y nada más.
+  if GuardAborto then
+    Exit;
 
   // {app} y NO el literal '{sd}\Program Files\ObserverAgent'. El agente resuelve
   // su directorio de instalación a partir del ejecutable que corre, así que este
