@@ -11,6 +11,7 @@ on:
 jobs:
   no-legacy:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     name: Block legacy upstream strings
     # Gate de rebrand, agregado el 2026-08-03. Este repo no tenia ninguno: la
     # limpieza de referencias al producto de origen se hizo a mano y sin gate
@@ -65,6 +66,8 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    # el mas lento medido: 7 min
+    timeout-minutes: 20
     name: Run tests (Go ${{ matrix.go-version }})
 
     strategy:
@@ -124,6 +127,8 @@ jobs:
   # de verdad esa ruta para que un error de cgo no llegue al release.
   macos-cgo:
     runs-on: macos-latest
+    # macOS descuenta x10: 51 s medidos, tope corto a proposito
+    timeout-minutes: 10
     name: Ensure mac agent compiles (cgo + CoreLocation)
 
     steps:

@@ -63,6 +63,8 @@ jobs:
   probe:
     name: Selección por versión en Windows real
     runs-on: windows-latest
+    # Windows descuenta x2
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -213,6 +215,8 @@ jobs:
   real-setup-iss:
     name: El setup.iss real elige el binario moderno
     runs-on: windows-latest
+    # ESTE es el job que se colgo 6 h el 2026-08-08 y se llevo 1.444 min de cuota; 49 s medidos
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -339,6 +343,7 @@ jobs:
   estructura:
     name: Las dos entradas de [Files] siguen bien redactadas
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 

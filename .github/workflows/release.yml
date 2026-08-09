@@ -21,6 +21,7 @@ jobs:
   validate-notes:
     name: Validate release notes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +47,7 @@ jobs:
     name: Build binaries
     needs: [validate-notes]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         include:
@@ -112,6 +114,8 @@ jobs:
     name: Build macOS binaries
     needs: [validate-notes]
     runs-on: macos-latest
+    # macOS descuenta x10: 48 s medidos
+    timeout-minutes: 10
     strategy:
       matrix:
         goarch: [amd64, arm64]
@@ -183,6 +187,8 @@ jobs:
     name: Build Windows installer
     needs: [validate-notes]
     runs-on: windows-latest
+    # Windows descuenta x2: 4,7 min medidos
+    timeout-minutes: 15
     strategy:
       matrix:
         goarch: [amd64, "386"]
@@ -340,6 +346,8 @@ jobs:
   release:
     name: Create release
     runs-on: ubuntu-latest
+    # sube los binarios de 8 plataformas: 19 min medidos
+    timeout-minutes: 30
     needs: [validate-notes, build, build-macos, build-windows-installer]
     steps:
       # El checkout es solo para poder leer release-notes/<tag>.md: este job antes
