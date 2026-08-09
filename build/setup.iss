@@ -12,7 +12,8 @@
 #define MyAppURL "https://docs.observer.cl"
 #define MyAppExeName "observeragent.exe"
 #define MESHEXE "meshagent.exe"
-#define MESHDIR "{sd}\Program Files\Mesh Agent"
+; No hay MESHDIR: el directorio del Mesh Agent NO se borra desde acá. Ver la
+; explicación en [UninstallDelete].
 ; Directorio que contiene los DOS binarios a empaquetar (observeragent-modern.exe
 ; y observeragent-legacy.exe; ver [Files]). Override en CI:
 ;   iscc build\setup.iss /DAgentSrc=<dir> /DMyAppVersion=<ver>
@@ -107,43 +108,48 @@ Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunO
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}";
-Type: filesandordirs; Name: "{#MESHDIR}";
 ;
-; ⚠️ ASIMETRÍA CONOCIDA Y PENDIENTE DE MEDICIÓN — no es un descuido.
+; ⚠️ ACÁ NO VA NINGÚN DIRECTORIO DEL MESH AGENT. Ni "{sd}\Program Files\Mesh
+; Agent" ni "{commonpf32}\Mesh Agent" (donde queda el Mesh de 32 bits sobre un
+; Windows x64). No es un olvido: las dos se probaron y las dos se retiraron, por
+; la misma razón y ahora con medición que la respalda.
 ;
-; NO agregar acá "{commonpf32}\Mesh Agent", que es donde queda el Mesh Agent de
-; 32 bits sobre un Windows x64 (medido en terreno). Se probó y se retiró: quien
-; desregistra el nodo es el `-fulluninstall` del [UninstallRun] de arriba, y si
-; ESE falla, borrar el directorio se lleva el único binario con el que se puede
-; reintentar a mano. El equipo quedaría con el servicio "Mesh Agent" registrado
-; apuntando a un ejecutable inexistente y el nodo vivo en MeshCentral, sin
-; recuperación local posible. Dejar el directorio en pie es el comportamiento
-; recuperable; borrarlo, el irreversible.
+; QUIEN SE LLEVA EL DIRECTORIO ES EL `-fulluninstall` DEL [UninstallRun] DE
+; ARRIBA, no esta sección. Medido el 2026-08-09 (DESKTOP-8I6R7NF, Win10 22H2
+; x64, agente 2.15.2 amd64, `/LOG=`): el `-fulluninstall` salió con código 0 en
+; 4,3 s y dejó el equipo sin servicio y sin directorio. El log lo prueba por
+; ausencia — Inno registra cada borrado de [UninstallDelete] como "Deleting
+; directory:", y de las 368 de esa corrida NINGUNA cae bajo "Mesh Agent": cuando
+; esta sección corrió, el directorio ya no existía.
 ;
-; PERO ESE MISMO RAZONAMIENTO CONDENA A LA LÍNEA `{#MESHDIR}` DE ARRIBA, que es
-; el literal `{sd}\Program Files\Mesh Agent`: viva en amd64 y en Windows de 32
-; bits genuino, inerte justo en 386 sobre x64. Se deja EN PIE a propósito, y por
-; una razón que no es técnica sino de orden de las mediciones:
+; O SEA: en el camino sano la línea no hacía nada. Sólo llegaba a borrar algo
+; cuando el `-fulluninstall` FALLABA — y ese es justo el caso en que borrar es
+; irreversible. El escenario no es hipotético: el 2026-08-06 el LenovoG480 dio
+; `CreateProcess failed (2)` porque `{app}\meshagent.exe` no existía, e Inno
+; siguió adelante igual (el mismo log prueba que Inno NO aborta cuando un
+; [UninstallRun] falla). Con la línea puesta, ese equipo habría quedado con el
+; servicio "Mesh Agent" registrado apuntando a un ejecutable inexistente, el
+; nodo vivo en MeshCentral, y sin recuperación local posible: el UninstallString
+; de "Agregar o quitar programas" apunta a ese mismo MeshAgent.exe borrado, así
+; que no sirven ni el Panel de control ni reintentar a mano.
 ;
-;   - La precondición del escenario malo NO es hipotética. Está en el log del
-;     2026-08-06 (LenovoG480 amd64, `/LOG=`): `meshagent.exe -fulluninstall`
-;     devolvió `CreateProcess failed (2)` porque `{app}\meshagent.exe` no
-;     existía, e Inno siguió adelante — el mismo log prueba que Inno NO aborta
-;     cuando un [UninstallRun] falla.
-;   - Esa corrida es la investigación ABIERTA del residuo en ARP de amd64.
-;     Cambiar esta línea ahora dejaría la medición pendiente hecha sobre código
-;     distinto del que produjo el síntoma.
-;
-; Se resuelve con el paso 0 del plan de terreno —desinstalar el agente amd64 con
-; `/LOG=`— que responde las tres preguntas de una vez: si `{app}\meshagent.exe`
-; existe en un amd64 sano, si el `-fulluninstall` corre y retorna, y si el
-; directorio y el servicio sobreviven. Con eso se decide con datos.
+; Beneficio en el camino sano: cero. Daño en el camino roto: irreversible. Lo
+; único que se cede es basura en disco si alguna vez el `-fulluninstall` borrara
+; el servicio pero dejara archivos — categoría D3, fuera de alcance.
 ;
 ; La tercera salida evaluada fue condicionar la línea con un `Check:` que sólo
-; borre si el servicio ya no existe. Es lo correcto en principio, pero NO está
+; borre si el servicio ya no existe. Queda descartada por innecesaria: no está
 ; verificado que Inno evalúe funciones `Check` en [UninstallDelete] en tiempo de
-; desinstalación, y acá no se meten mecanismos sin medir: es la misma razón por
-; la que existe el gate del corte de versión.
+; desinstalación, y borrar la línea logra lo mismo sin meter un mecanismo sin
+; medir.
+;
+; 🔴 LO QUE ESTO NO ARREGLA, y hay que saberlo al leer esta sección: ese mismo
+; `-fulluninstall` que devolvió 0 NO desregistró el nodo en MeshCentral. El nodo
+; siguió vivo 9 minutos con el agente ya desinstalado, y lo terminó borrando el
+; servidor por la vía de la feature 033 (ventana de gracia → post_delete →
+; remove_mesh_node_task). Si alguien cancela ese borrado —que es exactamente
+; para lo que existe la ventana— el nodo queda huérfano. Es un defecto del
+; agente, no de esta sección, y se sigue aparte.
 
 [Code]
 // El agente de 32 bits NO se instala de cero en un Windows de 64 bits.
