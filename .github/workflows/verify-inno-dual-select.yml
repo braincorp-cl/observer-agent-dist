@@ -220,20 +220,87 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y --no-progress
 
-      - name: Preparar los dos testigos con el nombre real
+      # Los testigos son EJECUTABLES DE VERDAD, no archivos de texto, y la razon
+      # no es estetica.
+      #
+      # `DeinitializeSetup` corre `cmd.exe /c observeragent.exe -m installsvc` con
+      # `ewWaitUntilTerminated`. Con un testigo de texto esa llamada NO RETORNA
+      # NUNCA -medido el 2026-08-09: el log del instalador se corta en
+      # "Deinitializing Setup." y no llega a escribir "install service:" ni
+      # "Log closed."-, asi que el proceso quedaba colgado y el paso lo abandonaba
+      # al vencer su espera. Ese cuelgue es el que se llevo 1.444 min de cuota.
+      #
+      # Y mientras el testigo no fuera ejecutable, este job era ESTRUCTURALMENTE
+      # incapaz de afirmar nada sobre `DeinitializeSetup`: cualquier cambio ahi
+      # -codigo que atraviesa toda instalacion y toda actualizacion de la flota
+      # Windows- quedaba fuera de su alcance, y su modo de falla es mudo
+      # (instalador en exito, servicio muerto).
+      #
+      # El stub deja su rastro en el DIRECTORIO DE TRABAJO que recibio, que es
+      # justamente el `{app}` que `setup.iss` expande. Eso convierte en verificable
+      # el invariante que el comentario de build/setup.iss explica y que hasta hoy
+      # no vigilaba nadie.
+      - name: Compilar los dos testigos con el nombre real
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $src = Join-Path $PWD 'stage_real'
-          New-Item -ItemType Directory -Force -Path $src, (Join-Path $PWD 'out_real') | Out-Null
+          $gos = Join-Path $PWD 'testigo_src'
+          New-Item -ItemType Directory -Force -Path $src, $gos, (Join-Path $PWD 'out_real') | Out-Null
+
+          # La etiqueta queda como string EN EL BINARIO, para poder saber cual de
+          # los dos instalo Inno sin depender de que el stub haya llegado a correr:
+          # el veredicto de seleccion por version tiene que sobrevivir a que
+          # DeinitializeSetup se rompa, o una regresion ahi taparia a la otra.
+          $plantilla = @'
+          package main
+
+          import (
+          	"os"
+          	"path/filepath"
+          	"strings"
+          )
+
+          const etiqueta = "OBSERVER-TESTIGO-XXETIQUETAXX"
+
+          func main() {
+          	wd, err := os.Getwd()
+          	if err != nil {
+          		os.Exit(1)
+          	}
+          	rastro := etiqueta + "|" + wd + "|" + strings.Join(os.Args[1:], " ")
+          	if err := os.WriteFile(filepath.Join(wd, "installsvc-testigo.txt"), []byte(rastro), 0644); err != nil {
+          		os.Exit(1)
+          	}
+          }
+          '@
+
+          Push-Location $gos
+          'module testigo' + "`n" + 'go 1.20' | Set-Content -Encoding ascii go.mod
+          foreach ($e in 'MODERN','LEGACY') {
+            $plantilla -replace 'XXETIQUETAXX', $e | Set-Content -Encoding ascii main.go
+            $dst = Join-Path $src ('observeragent-' + $e.ToLower() + '.exe')
+            $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
+            go build -o $dst .
+            if ($LASTEXITCODE -ne 0) { throw "go build fallo para el testigo $e" }
+          }
+          Pop-Location
+
           # Los nombres son los que espera build/setup.iss. Si alguien los cambia
           # ahí sin cambiarlos acá, ISCC falla en compilación: es intencional.
-          [System.IO.File]::WriteAllText((Join-Path $src 'observeragent-modern.exe'), 'MODERN')
-          [System.IO.File]::WriteAllText((Join-Path $src 'observeragent-legacy.exe'), 'LEGACY')
+          foreach ($f in 'observeragent-modern.exe','observeragent-legacy.exe') {
+            $p = Join-Path $src $f
+            if (-not (Test-Path $p)) { throw "no se compilo $f" }
+            Write-Host ("{0}: {1} bytes" -f $f, (Get-Item $p).Length)
+          }
 
       - name: Compilar el instalador real
         shell: pwsh
@@ -272,15 +339,44 @@ jobs:
           while (-not (Test-Path $placed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
 
           $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+
           # El veredicto se lee del DISCO, nunca del log: Inno registra también los
           # archivos que DESCARTA por condicion de version, asi que un grep sobre el
           # log da un falso positivo garantizado.
-          $pick = if (Test-Path $placed) { (Get-Content -Raw $placed).Trim() } else { '<NADA INSTALADO>' }
+          #
+          # La etiqueta se saca del BINARIO instalado, no del rastro que deja el
+          # stub al correr: asi la seleccion por version se sigue midiendo aunque
+          # DeinitializeSetup se rompa. Si dependiera del rastro, una regresion ahi
+          # taparia a la otra y las dos se verian como el mismo rojo.
+          $pick = '<NADA INSTALADO>'
+          if (Test-Path $placed) {
+            $txt = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($placed))
+            if ($txt -match 'OBSERVER-TESTIGO-(MODERN|LEGACY)') { $pick = $Matches[1] }
+            else { $pick = '<BINARIO SIN ETIQUETA>' }
+          }
+
+          # El rastro del stub. Su sola existencia prueba que DeinitializeSetup
+          # llego a ejecutar el binario instalado; su contenido dice con que
+          # directorio de trabajo lo hizo, o sea a que expandio {app}.
+          $rastro    = Join-Path $dest 'installsvc-testigo.txt'
+          $corrio    = Test-Path $rastro
+          $appVisto  = '<NO CORRIO>'
+          $argsVisto = '<NO CORRIO>'
+          $etqVista  = '<NO CORRIO>'
+          if ($corrio) {
+            $campos = ((Get-Content -Raw $rastro).Trim() -split '\|')
+            $etqVista  = $campos[0]
+            $appVisto  = $campos[1]
+            $argsVisto = if ($campos.Count -gt 2) { $campos[2] } else { '' }
+          }
 
           Write-Host "=============== VEREDICTO (setup.iss real) ==============="
           Write-Host "Build real del runner : $realBuild"
           Write-Host "DestName en disco     : $placed"
-          Write-Host "Contenido instalado   : $pick"
+          Write-Host "Binario instalado     : $pick"
+          Write-Host "DeinitializeSetup     : corrio=$corrio  etiqueta=$etqVista"
+          Write-Host "  {app} que expandio  : $appVisto   (se espera $dest)"
+          Write-Host "  argumentos          : $argsVisto   (se espera -m installsvc)"
           Write-Host "=========================================================="
 
           if ($realBuild -lt 10240) {
@@ -293,7 +389,23 @@ jobs:
           if ($pick -ne 'MODERN') {
             throw "el setup.iss real no dejo ningun binario en disco ($pick)."
           }
-          Write-Host "OK - el instalador de producto entrega el binario moderno en Windows $realBuild."
+
+          # De aca abajo, lo que el job no podia afirmar mientras el testigo fue un
+          # archivo de texto.
+          if (-not $corrio) {
+            throw "DeinitializeSetup no ejecuto el binario instalado: no aparecio $rastro. Es el procedimiento que hace '-m installsvc' y 'net start' en TODA instalacion de la flota Windows, y su falla es muda: el instalador reporta exito y el servicio nunca arranca."
+          }
+          if ($etqVista -ne "OBSERVER-TESTIGO-$pick") {
+            throw "el binario que corrio ($etqVista) no es el que Inno instalo (OBSERVER-TESTIGO-$pick)."
+          }
+          if ($appVisto -ne $dest) {
+            throw "DeinitializeSetup expandio {app} a '$appVisto' y no a '$dest'. Ese valor es el que le dice al agente donde quedo instalado: con el equivocado se repite la divergencia de 32/64 bits que origino toda esta ronda."
+          }
+          if ($argsVisto -notmatch '-m\s+installsvc') {
+            throw "DeinitializeSetup llamo al binario con '$argsVisto' en vez de '-m installsvc'."
+          }
+          Write-Host "OK - el instalador de producto entrega el binario moderno en Windows $realBuild,"
+          Write-Host "     y DeinitializeSetup lo ejecuto con '-m installsvc' en $appVisto."
 
       # El guard de arquitectura, medido en un Windows x64 de verdad.
       #
