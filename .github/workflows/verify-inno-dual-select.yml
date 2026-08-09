@@ -251,7 +251,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dest = 'C:\observer-real-check'
           Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
-          & .\out_real\realprobe.exe /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$dest" "/LOG=$PWD\log-real.txt" | Out-Null
+          # NO usar `& exe | Out-Null`: el pipe hace que PowerShell espere a que se
+          # CIERRE el flujo de salida, no a que el proceso termine, y el hijo que
+          # Inno se desprende hereda ese handle. Medido el 2026-08-09: el instalador
+          # completo su trabajo en 6 s ("Installation process succeeded" en
+          # log-real.txt) y el paso siguio colgado 9 min 26 s sin emitir una linea,
+          # hasta que lo mato el timeout-minutes del job. Dos jobs asi corrieron
+          # hasta el techo de 6 h de GitHub el 2026-08-08 y se llevaron el 53 % de
+          # la cuota del mes. Start-Process no engancha pipes; Wait-Process espera
+          # al PROCESO y lleva su propio limite.
+          $exe = (Resolve-Path .\out_real\realprobe.exe).Path
+          $p = Start-Process -FilePath $exe -PassThru -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES',"/DIR=$dest","/LOG=$PWD\log-real.txt"
+          $p | Wait-Process -Timeout 120 -ErrorAction SilentlyContinue
 
           # Se espera al efecto en disco, no al exit code: el .exe de Inno se
           # desprende de la consola y puede retornar antes de terminar.
@@ -306,7 +318,15 @@ jobs:
 
           $dest = 'C:\observer-arch-guard-check'
           Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
-          & .\out_real\arch386probe.exe /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$dest" "/LOG=$PWD\log-arch-guard.txt" | Out-Null
+          # Sin pipe, por lo mismo que el paso anterior. Y aca importa el doble:
+          # este control espera que NO se instale nada, asi que un wait demasiado
+          # corto daria un verde falso -el guard se veria bien solo porque no le
+          # dimos tiempo de fallar-. Se espera al proceso y despues se deja
+          # asentar el disco.
+          $exe = (Resolve-Path .\out_real\arch386probe.exe).Path
+          $p = Start-Process -FilePath $exe -PassThru -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES',"/DIR=$dest","/LOG=$PWD\log-arch-guard.txt"
+          $p | Wait-Process -Timeout 120 -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
           $realBuild = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
