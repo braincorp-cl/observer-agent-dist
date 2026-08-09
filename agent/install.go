@@ -59,6 +59,75 @@ func (a *Agent) logTLSChain(cs *tls.ConnectionState, ctx string) {
 	}
 }
 
+// meshUninstallArgs son los argumentos del desinstalador local del Mesh.
+//
+// Vive en una función con test propio porque el ORDEN no es decorativo: el
+// `--no-embedded=1` va DESPUÉS del comando. El binario que MeshCentral entrega
+// trae un instalador JS anexado que se dispara ante CUALQUIER argumento, también
+// ante `-fulluninstall` (medido en Linux el 2026-07-29: abre un diálogo en el
+// escritorio y se cuelga esperando un clic que nadie va a dar). Invertirlos, o
+// perder la bandera en una edición, deja el desinstalador colgado sin que nada
+// falle a la vista.
+func meshUninstallArgs() []string {
+	return []string{"-fulluninstall", "--no-embedded=1"}
+}
+
+// meshUninstallShellCmd arma la misma invocación como línea de shell, que es lo
+// que CmdV2 necesita en unix. Sin comillas, igual que checkExistingAndRemove: en
+// unix la ruta del Mesh es fija y sin espacios (/usr/local/mesh_services/... en
+// macOS, /opt/observermesh en Linux). En Windows NO se usa esta forma — ahí va
+// por CMD con argv, que no pasa por ningún shell.
+func meshUninstallShellCmd(exe string) string {
+	return exe + " " + strings.Join(meshUninstallArgs(), " ")
+}
+
+// rollbackMeshInstall desinstala el Mesh que ESTA corrida acaba de instalar,
+// cuando el enrolamiento en el RMM falla después.
+//
+// El orden del instalador es: instalar el Mesh —que al conectarse ya registra el
+// nodo en MeshCentral— y recién después `POST /api/v3/newagent/`. Si ese POST
+// falla, el proceso muere y el equipo queda con un agente Mesh VIVO, conectado a
+// nuestro MeshCentral, que ninguna fila del RMM apunta: acceso remoto que nadie
+// administra ni ve. Eso es lo que esto corta.
+//
+// ⚠️ LO QUE NO HACE, y hay que saberlo antes de creerle de más: NO borra el nodo
+// del servidor. El `-fulluninstall` es LOCAL POR DISEÑO — verificado en la fuente
+// de MeshAgent el 2026-08-09: `-fulluninstall` (agentcore.c:4858) desemboca en
+// `modules/agent-installer.js`, que no importa una sola primitiva de red (sólo
+// fs, child_process y los service managers) y cuyo único trato con el `.msh` —el
+// archivo donde vive la URL del servidor— es borrarlo. El nodo queda en
+// MeshCentral, ahora muerto, y lo levanta el censo de huérfanos del servidor.
+// Acá se cierra el ACCESO, no el registro.
+//
+// Nunca puede tapar el error del enrolamiento: si el rollback falla se registra y
+// se sigue de largo, para que el usuario vea el error de verdad.
+func (a *Agent) rollbackMeshInstall(installedEXE, meshNodeID string) {
+	if installedEXE == "" {
+		return
+	}
+
+	a.Logger.Errorln(
+		"El enrolamiento falló después de instalar el Mesh; se desinstala para no",
+		"dejar un agente Mesh sin dueño. Nodo:", meshNodeID,
+	)
+
+	switch runtime.GOOS {
+	case "windows":
+		if _, err := CMD(installedEXE, meshUninstallArgs(), 60, false); err != nil {
+			a.Logger.Errorln("rollbackMeshInstall():", err)
+		}
+	default:
+		// En unix `CMD` es un stub que no ejecuta nada (agent_unix.go:1012), así
+		// que acá va por CmdV2, igual que checkExistingAndRemove.
+		opts := a.NewCMDOpts()
+		opts.Command = meshUninstallShellCmd(installedEXE)
+		out := a.CmdV2(opts)
+		if out.Status.Exit != 0 {
+			a.Logger.Errorln("rollbackMeshInstall():", out.Stderr)
+		}
+	}
+}
+
 func (a *Agent) Install(i *Installer) {
 	i.Headers = map[string]string{
 		"content-type":  "application/json",
@@ -181,6 +250,12 @@ func (a *Agent) Install(i *Installer) {
 
 	var meshNodeID, meshOutput string
 
+	// Binario del Mesh que instaló ESTA corrida, para poder deshacerlo si el
+	// enrolamiento falla más abajo. Vacío = no instalamos nada acá (-nomesh,
+	// Linux, o el Mesh ya venía puesto) y entonces no hay nada que deshacer:
+	// sólo se revierte lo que uno mismo hizo.
+	var installedMeshEXE string
+
 	if !i.NoMesh && runtime.GOOS != "linux" {
 		switch runtime.GOOS {
 		case "windows":
@@ -222,6 +297,7 @@ func (a *Agent) Install(i *Installer) {
 			if err != nil {
 				a.installerMsg(fmt.Sprintf("Failed to install mesh agent: %s", err.Error()), "error", i.Silent)
 			}
+			installedMeshEXE = installerMeshSystemEXE
 		} else {
 			opts := a.NewCMDOpts()
 			opts.Command = fmt.Sprintf("%s -install --installPath=%s", meshOutput, nixMeshDir)
@@ -231,6 +307,7 @@ func (a *Agent) Install(i *Installer) {
 				a.Logger.Fatalln("Error installing mesh agent:", out.Stderr)
 			}
 			fmt.Println(out.Stdout)
+			installedMeshEXE = a.MeshSystemEXE
 		}
 	}
 
@@ -255,11 +332,17 @@ func (a *Agent) Install(i *Installer) {
 		"plat":            a.Platform,
 	}
 
+	// Los dos rollbacks van ANTES del installerMsg de error: ese mensaje es
+	// FATAL (Logger.Fatalln en las dos plataformas, install_unix.go:19 e
+	// install_windows.go:138), así que cualquier limpieza puesta después no
+	// llega a correr nunca.
 	r, err := rClient.R().SetBody(agentPayload).SetResult(&NewAgentResp{}).Post(fmt.Sprintf("%s/api/v3/newagent/", baseURL))
 	if err != nil {
+		a.rollbackMeshInstall(installedMeshEXE, meshNodeID)
 		a.installerMsg(err.Error(), "error", i.Silent)
 	}
 	if r.StatusCode() != 200 {
+		a.rollbackMeshInstall(installedMeshEXE, meshNodeID)
 		a.installerMsg(r.String(), "error", i.Silent)
 	}
 

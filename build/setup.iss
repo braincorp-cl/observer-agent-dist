@@ -103,7 +103,9 @@ Filename: "{cmd}"; Parameters: "/c taskkill /F /IM observeragent.exe"; RunOnceId
 ; para instalar trae un instalador JS anexado que se dispara ante CUALQUIER
 ; argumento, también ante `-fulluninstall`: medido en Linux (HP-ProOne-400,
 ; 2026-07-29) abre un diálogo en el escritorio y se cuelga esperando un clic.
-; Acá eso dejaría el nodo Mesh vivo en el servidor después de desinstalar.
+; Acá eso dejaría el Mesh instalado y corriendo en el EQUIPO después de
+; desinstalar todo lo demás. (Decía "el nodo vivo en el servidor": era falso,
+; ver el bloque 🟢 de [UninstallDelete].)
 Filename: "{app}\{#MESHEXE}"; Parameters: "-fulluninstall --no-embedded=1"; RunOnceId: "meshrm";
 
 [UninstallDelete]
@@ -143,13 +145,25 @@ Type: filesandordirs; Name: "{app}";
 ; desinstalación, y borrar la línea logra lo mismo sin meter un mecanismo sin
 ; medir.
 ;
-; 🔴 LO QUE ESTO NO ARREGLA, y hay que saberlo al leer esta sección: ese mismo
-; `-fulluninstall` que devolvió 0 NO desregistró el nodo en MeshCentral. El nodo
-; siguió vivo 9 minutos con el agente ya desinstalado, y lo terminó borrando el
-; servidor por la vía de la feature 033 (ventana de gracia → post_delete →
-; remove_mesh_node_task). Si alguien cancela ese borrado —que es exactamente
-; para lo que existe la ventana— el nodo queda huérfano. Es un defecto del
-; agente, no de esta sección, y se sigue aparte.
+; 🟢 LO QUE ESTO NO HACE, y no lo hizo nunca: ese `-fulluninstall` que devolvió
+; 0 NO desregistra el nodo en MeshCentral — y no es un defecto, es el diseño.
+; Verificado en la fuente de MeshAgent el 2026-08-09: `-fulluninstall`
+; (agentcore.c:4858) desemboca en `modules/agent-installer.js`, que no importa
+; una sola primitiva de red (fs, child_process y los service managers, nada
+; más) y cuyo único trato con el `.msh` —el archivo donde vive la URL del
+; servidor— es borrarlo. No hay asimetría Windows/Linux ni culpa del
+; `--no-embedded=1`: una bandera no agrega una llamada de red que no existe.
+;
+; El nodo lo borra SÓLO el servidor, por una vía: post_delete de Agent →
+; remove_mesh_node_task, que cubre toda ruta de borrado (consola, admin,
+; queryset, y la ventana de gracia de la 033). Mientras la fila del Agent viva,
+; el nodo es coherente con lo que muestra el RMM; y sin agente en el equipo, ese
+; nodo ya no puede conectarse.
+;
+; 🔴 La fuga real no está acá sino en el INSTALADOR: el Mesh se instala antes de
+; `POST /api/v3/newagent/`, así que un enrolamiento fallido dejaba un nodo que
+; ninguna fila apunta. Se cierra en agent/install.go (rollbackMeshInstall) más
+; el censo de huérfanos del servidor.
 
 [Code]
 // El agente de 32 bits NO se instala de cero en un Windows de 64 bits.
