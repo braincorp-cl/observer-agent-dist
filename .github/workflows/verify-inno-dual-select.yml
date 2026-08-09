@@ -543,6 +543,25 @@ jobs:
           grep -q "RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\\\\ObserverRMM')" "$iss" && r=ok || r=no
           assert "$r" "el guard sigue exceptuando a las instalaciones que YA tienen agente (solo bloquea la instalacion nueva)."
 
+          # --- La direccion contraria: amd64 sobre un Windows de 32 bits ---
+          # Esta rama NO se puede medir en CI: GitHub no ofrece runners de Windows
+          # de 32 bits. Por eso se afirma sobre el texto, que es lo unico que hay,
+          # y queda declarado que la medicion falta (mismo estatus que la rama
+          # OnlyBelowVersion, T026).
+          grep -q "'{#Arch}' = 'amd64'" "$iss" && r=ok || r=no
+          assert "$r" "setup.iss trae el guard de la direccion contraria (compara Arch con amd64)."
+
+          grep -q 'not IsWin64' "$iss" && r=ok || r=no
+          assert "$r" "ese guard se dispara cuando el Windows NO es de 64 bits."
+
+          # Un guard que se declara y no se invoca es peor que no tenerlo: se lee
+          # como cubierto. Se exige la llamada desde InitializeSetup.
+          grep -q 'if ArquitecturaImposible() then' "$iss" && r=ok || r=no
+          assert "$r" "InitializeSetup invoca ArquitecturaImposible (declararla no basta)."
+
+          grep -q 'if ArquitecturaEquivocada() then' "$iss" && r=ok || r=no
+          assert "$r" "InitializeSetup invoca ArquitecturaEquivocada."
+
           rel=.github/workflows/release.yml
           # ⚠️ EL PATRON VA ESCAPADO CARACTER POR CARACTER, y no es un adorno: es
           # lo unico que impide que Actions se coma esta linea antes que el shell.

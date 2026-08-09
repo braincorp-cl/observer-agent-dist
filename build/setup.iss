@@ -195,6 +195,29 @@ begin
             (not RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\ObserverRMM'));
 end;
 
+// La dirección contraria: el agente de 64 bits sobre un Windows de 32 bits.
+//
+// Es el mismo error del operador, con un final distinto. Acá el binario NO PUEDE
+// EJECUTARSE: Windows de 32 bits no carga un PE x64, así que el `-m install` de
+// DeinitializeSetup falla con ERROR_BAD_EXE_FORMAT y el equipo queda con los
+// archivos puestos, la entrada en «Agregar o quitar programas», y ningún agente.
+// Sin este guard el instalador de Inno —que es un ejecutable de 32 bits y por lo
+// tanto corre sin problemas— llega hasta el final y el fracaso aparece después,
+// lejos de su causa.
+//
+// ⚠️ ACÁ NO VA LA EXCEPCIÓN POR INSTALACIÓN PREVIA, y no es un olvido. En el
+// caso 386-sobre-x64 la excepción existe porque el update REPARA un equipo ya
+// roto: el binario corre, sólo que en el lugar equivocado. Acá no hay nada que
+// reparar — un PE x64 no se ejecuta en un Windows de 32 bits ni con instalación
+// previa ni sin ella— así que permitirlo sólo lograría romper un agente que hoy
+// funciona. Y no puede bloquear un update legítimo: el servidor elige el
+// instalador del update con el `goarch` que el propio agente reporta, y un
+// agente que corre en ese equipo es 386 por definición.
+function ArquitecturaImposible(): Boolean;
+begin
+  Result := ('{#Arch}' = 'amd64') and (not IsWin64);
+end;
+
 // Inno llama a DeinitializeSetup en TODA salida, también cuando InitializeSetup
 // devuelve False. Este flag es cómo se entera de que no hubo instalación.
 var
@@ -214,6 +237,21 @@ begin
       'Instalar la version de 32 bits aca deja el equipo en un estado que se ve' + #13#10 +
       'correcto pero no lo esta: las actualizaciones no surten efecto y el' + #13#10 +
       'inventario de software queda incompleto.',
+      mbCriticalError, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
+
+  if ArquitecturaImposible() then
+  begin
+    GuardAborto := True;
+    Log('ABORTADO: instalador de 64 bits (amd64) sobre un Windows de 32 bits.');
+    SuppressibleMsgBox(
+      'Este es el instalador de 64 bits (amd64) y este equipo es de 32 bits.' + #13#10 + #13#10 +
+      'Instale la version de 32 bits (386) del agente Observer RMM.' + #13#10 + #13#10 +
+      'El agente de 64 bits no puede ejecutarse en un Windows de 32 bits: la' + #13#10 +
+      'instalacion terminaria dejando los archivos y la entrada de desinstalacion' + #13#10 +
+      'en el equipo, pero ningun agente corriendo.',
       mbCriticalError, MB_OK, IDOK);
     Result := False;
     Exit;
