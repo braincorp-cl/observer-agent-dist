@@ -105,6 +105,22 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// Windows has GetAgentCheckInConfig() while unix has a stub GetAgentCheckInConfig()
 	conf := a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI())
 	a.Logger.Debugf("AgentCheckInConf: %+v\n", conf)
+
+	// Feature 030 · esta config YA trae el estado de modo perdido, y hasta el
+	// 2026-08-11 se ignoraba: sólo el primer tick de geo lo aplicaba. Medido en
+	// terreno contra staging: un equipo marcado mientras estaba apagado tardó
+	// 5 min 02 s desde que arrancó el servicio hasta empezar a capturar, y ese
+	// número es el `checkin_geo` del ambiente —con el default del producto
+	// (1500-2100 s) serían 25 a 35 minutos de un equipo robado moviéndose sin
+	// que se registre nada. El dato estaba acá desde el primer segundo.
+	//
+	// Mismo resguardo que en el tick: sólo se aplica si la config vino DE VERDAD
+	// del servidor. Con el repliegue (sin red al arrancar, que es lo normal en un
+	// portátil recién encendido) todos los campos son ceros, y ese `lost_mode=false`
+	// apagaría el estado que ResumeLostMode acaba de restaurar desde el disco.
+	if conf.fromServer {
+		a.SetLostMode(conf.LostMode, conf.LostModeIntervalMin)
+	}
 	// Gap 3: propaga el force-on al Agent para que osLocation lo lea antes de
 	// escanear. Global; solo el backend lo enciende (y solo si geo_tracking=ON).
 	a.GeoForceOn = conf.GeoForceOn
@@ -164,7 +180,16 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	//
 	// (TODO: disparo adicional al detectar cambio de red — diferido; el ticker cubre
 	// la captura periódica garantizada.)
-	geoInterval := geoTickInterval(conf.Geo)
+	// Feature 030 · el ticker nace con la cadencia que corresponde al estado, no
+	// con la normal. Antes se creaba con `geoTickInterval(conf.Geo)` y la cadencia
+	// del caso recién bajaba en el primer tick: medido en terreno, 5 min 12 s a
+	// cadencia normal después de un `kill -9` del servicio (y 25 a 35 min con el
+	// `checkin_geo` por omisión del producto). Justo lo que la persistencia del
+	// estado venía a evitar: un equipo robado se reinicia, y el reinicio no puede
+	// costar una ventana ciega en cada arranque.
+	perdidoAlArrancar, intervaloAlArrancar := a.getLostMode()
+	geoInterval := geoTickIntervalFor(perdidoAlArrancar, intervaloAlArrancar, conf.Geo)
+	a.Logger.Debugf("geo: ticker inicial %ds (modo perdido: %v)", geoInterval, perdidoAlArrancar)
 	checkInGeoTicker := time.NewTicker(time.Duration(geoInterval) * time.Second)
 
 	// Guard atómico: si un SyncMeshNodeID del tick anterior sigue corriendo,
