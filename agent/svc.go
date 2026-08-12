@@ -47,6 +47,15 @@ type AgentCheckInConfig struct {
 	Geo        int  `json:"checkin_geo"`
 	// Gap 3: force-on del sensor de ubicación/radio WiFi en el endpoint corporativo.
 	GeoForceOn bool `json:"geo_force_on"`
+	// Feature 030: PRIMER campo per-agente de este endpoint. Es el canal de
+	// respaldo del push por NATS — un equipo que estaba apagado cuando lo
+	// marcaron se entera acá al reconectar.
+	LostMode            bool `json:"lost_mode"`
+	LostModeIntervalMin int  `json:"lost_mode_interval_min"`
+	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
+	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
+	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
+	fromServer bool
 }
 
 func (a *Agent) AgentSvc(nc *nats.Conn) {
@@ -68,6 +77,12 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// devolver. La segunda importa incluso cuando la primera no aplica — si el
 	// agente murió a mitad de alarma, el equipo quedó al máximo.
 	a.ResumeAlarm()
+
+	// Feature 030. Va junto a ResumeAlarm y por la misma razón: un equipo robado
+	// se reinicia, y sin esto la captura quedaría apagada hasta el próximo push
+	// o el próximo tick de config — que en un equipo que ya no vuelve a la red
+	// puede no llegar nunca.
+	a.ResumeLostMode()
 
 	// Sync temprano del mesh node id justo tras instalar, para que el server
 	// conozca la conectividad Mesh sin esperar al primer tick (backport v2.11.0
@@ -156,6 +171,10 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// saltamos este tick en vez de solaparlos (backport v2.11.0 "fix ... race").
 	var syncMeshRunning atomic.Bool
 
+	// Lo mismo para la captura de ubicación (feature 030). Con el piso de 300 s
+	// dos capturas no llegaban a solaparse; con la cadencia del modo perdido sí.
+	var geoRunning atomic.Bool
+
 	for {
 		select {
 		case <-checkInHelloTicker.C:
@@ -180,25 +199,78 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// consultas juntas.
 			geoConf := a.GetAgentCheckInConfig(a.GetCheckInConfFromAPI())
 
+			// Feature 030 · canal de respaldo del push por NATS. Es el ÚNICO
+			// camino garantizado: si el equipo estaba apagado cuando lo marcaron
+			// —el escenario central de la feature— el push se perdió y esta es la
+			// forma de enterarse al reconectar. Y en el otro sentido: si lo
+			// recuperaron mientras estaba sin red, acá se apaga.
+			//
+			// Sólo se aplica cuando la config vino DE VERDAD del servidor. Con el
+			// repliegue (sin red, servidor caído) todos los campos son ceros, y
+			// leer ese `lost_mode=false` como "ya no está perdido" apagaría la
+			// captura justo cuando el equipo perdió contacto.
+			if geoConf.fromServer {
+				a.SetLostMode(geoConf.LostMode, geoConf.LostModeIntervalMin)
+			}
+
+			perdido, perdidoIntervaloMin := a.getLostMode()
+
 			// Si el intervalo vigente cambió, se re-arma. Cubre el caso del arranque
-			// sin red, que dejaba puesto el intervalo del repliegue en vez del real.
-			if nuevo := geoTickInterval(geoConf.Geo); nuevo != geoInterval {
-				a.Logger.Debugf("geo: intervalo %ds -> %ds", geoInterval, nuevo)
+			// sin red, que dejaba puesto el intervalo del repliegue en vez del real,
+			// y ahora también las dos transiciones del modo perdido: el ticker nunca
+			// se detiene, así que entrar y salir del modo no necesita más código.
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geoConf.Geo); nuevo != geoInterval {
+				a.Logger.Debugf("geo: intervalo %ds -> %ds (modo perdido: %v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
 				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
 			}
 
-			if !geoConf.GeoEnabled {
+			// Feature 030 · el modo perdido IGNORA el interruptor global.
+			//
+			// Sin este bypass la feature sería un no-op en cualquier flota con la
+			// geo apagada por omisión, que es la instalación por defecto
+			// (ADR-024) — o sea, justo donde hace falta. Lo que lo justifica es el
+			// régimen de ADR-025: motivo obligatorio, permiso dedicado y una
+			// entrada de auditoría que deja escrito que el marcaje pisa esta
+			// perilla. No es una excepción silenciosa.
+			if !perdido && !geoConf.GeoEnabled {
 				// Se registra: el silencio sin explicación era justamente el problema.
 				a.Logger.Debugln("geo: interruptor apagado en este tick, no se captura")
 				continue
 			}
 
 			// Gap 3: el force-on también se re-evalúa, porque con el repliegue llegaba
-			// siempre apagado. Se escribe desde esta misma goroutine, inmediatamente
-			// antes de la captura que lo lee, así que no hay carrera con ella.
-			a.GeoForceOn = geoConf.GeoForceOn
-			a.NatsMessage(nc, "agent-geolocation")
+			// siempre apagado.
+			//
+			// En modo perdido va SIEMPRE encendido, y no es un extra: en Windows 11
+			// 24H2 / Server 2025 el escaneo de BSSIDs exige la ubicación del sistema
+			// activada, así que con el force-on apagado la geo intensiva devolvería
+			// `denied` o degradaría a IP —nivel ciudad— y el bypass de arriba no
+			// serviría de nada. Encender el interruptor sin encender el sensor sería
+			// otro "ok falso".
+			//
+			// Se escribe desde ESTA goroutine y sólo cuando se acaba de tomar la
+			// guardia; el `Store(false)` diferido establece la relación de orden con
+			// el tick siguiente, así que no hay carrera con la captura que lo lee.
+			if geoRunning.CompareAndSwap(false, true) {
+				a.GeoForceOn = geoConf.GeoForceOn || perdido
+
+				// La captura sale del hilo del `select`. Antes corría en línea, y
+				// en macOS una sola puede costar hasta ~40 s (CoreLocation 20 s +
+				// la consulta de config + la degradación a IP 10 s). Con el piso de
+				// 300 s eso se toleraba; con la cadencia del modo perdido pasa a ser
+				// el estado normal, y bloquear el `select` atrasa `agent-hello`
+				// (30-60 s) hasta hacer que el equipo aparezca OFFLINE en la consola
+				// justo cuando más importa. Mismo patrón que syncMeshTicker.
+				go func() {
+					defer geoRunning.Store(false)
+					a.NatsMessage(nc, "agent-geolocation")
+				}()
+			} else {
+				// Con cadencias cortas una captura lenta puede pisar a la
+				// siguiente. Se salta el tick en vez de apilarlas.
+				a.Logger.Debugln("geo: la captura anterior sigue corriendo, se salta este tick")
+			}
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
 				go func() {
@@ -249,6 +321,15 @@ func checkInConfFallback() AgentCheckInConfig {
 		GeoEnabled: false,
 		Geo:        randRange(geoMinInterval, geoMinInterval*2),
 		GeoForceOn: false,
+
+		// El modo perdido NO se apaga en el repliegue: a diferencia de la geo,
+		// su estado vive en el archivo local y no depende de esta llamada. Un
+		// `false` acá se lee como "el servidor dice que ya no está perdido", y
+		// sin respuesta del servidor eso es exactamente lo que no se sabe. Por
+		// eso el consumidor (svc.go) sólo aplica este campo cuando la config
+		// vino DE VERDAD del servidor.
+		LostMode:            false,
+		LostModeIntervalMin: 0,
 	}
 }
 
@@ -259,6 +340,24 @@ func geoTickInterval(fromConf int) int {
 		return geoMinInterval
 	}
 	return fromConf
+}
+
+// geoTickIntervalFor resuelve el intervalo EFECTIVO del ticker de geo.
+//
+// El piso de 300 s es una salvaguarda de privacidad para la operación normal: sin
+// él, un `checkin_geo` bajo —puesto a mano o por un tipeo en el servidor—
+// convertiría la flota en un rastreador. El modo perdido lo saltea a propósito,
+// porque un equipo robado se mueve y un punto cada cinco minutos no reconstruye
+// un recorrido. El límite ahí lo pone el clamp de 1-60 min, que se aplica en el
+// servidor y otra vez en el agente (ver lostmodestate.go).
+//
+// Va en su propia función para poder congelar en tests que el piso protege lo que
+// tiene que proteger y no lo que no.
+func geoTickIntervalFor(perdido bool, perdidoIntervaloMin, fromConf int) int {
+	if perdido {
+		return clampLostModeInterval(perdidoIntervaloMin) * 60
+	}
+	return geoTickInterval(fromConf)
 }
 
 func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
@@ -289,6 +388,9 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		ret.GeoEnabled = r.Result().(*AgentCheckInConfig).GeoEnabled
 		ret.Geo = r.Result().(*AgentCheckInConfig).Geo
 		ret.GeoForceOn = r.Result().(*AgentCheckInConfig).GeoForceOn
+		ret.LostMode = r.Result().(*AgentCheckInConfig).LostMode
+		ret.LostModeIntervalMin = r.Result().(*AgentCheckInConfig).LostModeIntervalMin
+		ret.fromServer = true
 	}
 	return ret
 }

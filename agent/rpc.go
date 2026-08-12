@@ -715,6 +715,27 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
+		case "lost_mode":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+
+				// El intervalo viaja como texto y en MINUTOS (`interval_min`, no
+				// `interval`): el mismo valor le llega también por el polling de
+				// config, y una ambigüedad de unidad daría una cadencia 60 veces
+				// mayor o menor sin ningún síntoma visible. Si no viene o no se
+				// puede leer, SetLostMode aplica el default y su tope.
+				intervalMin, _ := strconv.Atoi(p.Data["interval_min"])
+
+				a.SetLostMode(natsBoolFlag(p.Data["active"]), intervalMin)
+
+				// Siempre ok: el estado ya quedó fijado en memoria y un fallo de
+				// disco no debe reportarse como "no se pudo marcar" — el servidor
+				// ya dio el caso por abierto y la BD es la fuente de verdad.
+				ret.Encode(RespOK)
+				msg.Respond(resp)
+			}(payload)
+
 		case "stopalarm":
 			go func() {
 				var resp []byte

@@ -1,0 +1,233 @@
+package agent
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+)
+
+// Feature 030 (ADR-025) · estado de "equipo perdido/robado" que sobrevive al
+// proceso y al reinicio del equipo.
+//
+// Un equipo robado se reinicia —lo apaga quien lo tiene, o se queda sin
+// batería—, así que un estado que sólo viviera en memoria se perdería justo en
+// el escenario para el que existe la feature. Mismo razonamiento que la alarma
+// eterna de la 028, y por eso este archivo es su espejo deliberado.
+//
+// Hay DOS canales para enterarse del estado, y ninguno alcanza solo:
+//
+//  1. El push por NATS (`case "lost_mode"` en rpc.go), inmediato pero inútil si
+//     el equipo estaba apagado cuando lo marcaron.
+//  2. El polling de config (`/api/v3/<id>/config/`, campo `lost_mode`), que es
+//     el canal GARANTIZADO: el agente lo consulta en cada tick de geo y así se
+//     entera al reconectar, sin depender de que el push le haya llegado.
+//
+// El archivo en disco es lo que une los dos: mantiene el estado entre reinicios
+// mientras el equipo no puede hablar con el servidor.
+//
+// ⚠️ Consecuencia asumida (decisión del usuario, 2026-08-11): NO hay fusible por
+// falta de contacto. Un agente que jamás vuelve a hablar con el servidor sigue
+// capturando indefinidamente. Es deliberado —el caso de uso es un equipo
+// robado—, no un olvido.
+
+const (
+	// Topes de cadencia, en minutos. Duplican a propósito los del servidor
+	// (LOST_MODE_MIN/MAX_INTERVAL_MIN): el intervalo llega por DOS caminos —el
+	// push por NATS y el polling de config— y el piso no puede depender de que
+	// el que lo mandó lo haya acotado. Un 0 sería captura continua: mata la
+	// batería y delata al agente frente a quien tiene el equipo.
+	lostModeMinIntervalMin = 1
+	lostModeMaxIntervalMin = 60
+	// El default coincide con el del modelo del servidor. Se usa cuando el
+	// intervalo llega ausente o ilegible.
+	lostModeDefaultIntervalMin = 5
+)
+
+// persistedLostMode es lo que queda en disco entre ejecuciones.
+type persistedLostMode struct {
+	Active bool `json:"active"`
+	// En MINUTOS, igual que el campo del servidor. La unidad va en el nombre a
+	// propósito: el valor viaja por dos canales distintos y un malentendido de
+	// minutos/segundos daría una cadencia 60 veces mayor o menor sin ningún
+	// síntoma visible.
+	IntervalMin int `json:"interval_min"`
+}
+
+// Estado en memoria. Va en variables de paquete y no en el struct Agent porque
+// un mutex dentro de Agent lo volvería no copiable (`go vet` copylocks), y
+// porque hay un solo agente por proceso. Mismo criterio que `syncMeshRunning`
+// en svc.go.
+var (
+	lostModeMu          sync.RWMutex
+	lostModeActive      bool
+	lostModeIntervalMin = lostModeDefaultIntervalMin
+)
+
+// clampLostModeInterval acota el intervalo en los dos extremos. Un valor
+// ausente o ilegible (<= 0 tras el parseo) cae al default en vez de al piso:
+// "no me dijeron" no es lo mismo que "me pidieron el mínimo".
+func clampLostModeInterval(min int) int {
+	if min <= 0 {
+		return lostModeDefaultIntervalMin
+	}
+	if min < lostModeMinIntervalMin {
+		return lostModeMinIntervalMin
+	}
+	if min > lostModeMaxIntervalMin {
+		return lostModeMaxIntervalMin
+	}
+	return min
+}
+
+// lostModeDataDir es el directorio del archivo de estado.
+//
+// Duplica la rama de `alarmDataDir()` en vez de reusarla: son dos features con
+// ciclos de vida distintos y encadenarlas haría que mover el directorio de una
+// arrastrara a la otra sin que nadie lo note. En unix es `/opt/observeragent`,
+// que el desinstalador borra con RemoveAll —un archivo capaz de reactivar la
+// captura de evidencia no debe sobrevivir a la desinstalación—; en Windows es
+// `%PROGRAMDATA%\ObserverRMM`, que pese al nombre del campo (WinTmpDir) no es
+// un temporal del sistema y persiste entre reinicios.
+func (a *Agent) lostModeDataDir() string {
+	if lostModeDirOverride != "" {
+		return lostModeDirOverride
+	}
+	if runtime.GOOS == "windows" {
+		return a.WinTmpDir
+	}
+	return nixAgentDir
+}
+
+// lostModeDirOverride es la costura para las pruebas. El directorio real
+// (`/opt/observeragent`) no es escribible en CI, y la persistencia de este
+// estado es justamente lo que hay que probar: sin costura, la parte de la
+// feature que sobrevive al reinicio quedaría sin una sola prueba automática —
+// que es como la 028 llegó al terreno con ocho "ok falso".
+var lostModeDirOverride string
+
+func (a *Agent) lostModeStatePath() string {
+	return filepath.Join(a.lostModeDataDir(), "lost_mode.json")
+}
+
+// saveLostModeState escribe el estado de forma atómica: temporal + rename.
+//
+// Un corte a mitad de un `os.WriteFile` dejaría un JSON truncado, y un JSON
+// ilegible se comporta como "no había nada" — o sea, un equipo marcado como
+// perdido que al arrancar cree que no lo está.
+func (a *Agent) saveLostModeState(st persistedLostMode) {
+	path := a.lostModeStatePath()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		a.Logger.Debugln("saveLostModeState: no se pudo crear el directorio:", err)
+		return
+	}
+
+	data, err := json.Marshal(st)
+	if err != nil {
+		a.Logger.Debugln("saveLostModeState: no se pudo serializar:", err)
+		return
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		a.Logger.Debugln("saveLostModeState: no se pudo escribir:", err)
+		return
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		a.Logger.Debugln("saveLostModeState: no se pudo renombrar:", err)
+		_ = os.Remove(tmp)
+	}
+}
+
+// loadLostModeState lee el estado del disco. El segundo valor es false cuando
+// no hay nada que rearmar: archivo ausente, ilegible, o un caso ya recuperado.
+func (a *Agent) loadLostModeState() (persistedLostMode, bool) {
+	var st persistedLostMode
+
+	data, err := os.ReadFile(a.lostModeStatePath())
+	if err != nil {
+		return st, false
+	}
+
+	if err := json.Unmarshal(data, &st); err != nil {
+		a.Logger.Debugln("loadLostModeState: JSON ilegible, se descarta:", err)
+		a.clearLostModeState()
+		return st, false
+	}
+
+	if !st.Active {
+		return st, false
+	}
+
+	return st, true
+}
+
+func (a *Agent) clearLostModeState() {
+	if err := os.Remove(a.lostModeStatePath()); err != nil && !os.IsNotExist(err) {
+		a.Logger.Debugln("clearLostModeState:", err)
+	}
+}
+
+// getLostMode devuelve el estado vigente en memoria.
+func (a *Agent) getLostMode() (bool, int) {
+	lostModeMu.RLock()
+	defer lostModeMu.RUnlock()
+	return lostModeActive, lostModeIntervalMin
+}
+
+// SetLostMode fija el estado en memoria y lo persiste. Es idempotente y la
+// llaman los dos canales: el push por NATS y el polling de config.
+//
+// Los errores de disco se loguean y se tragan, igual que en ResumeAlarm: el
+// estado en memoria ya quedó bien y negarse a operar porque no se pudo escribir
+// un archivo sería peor que perder la persistencia.
+func (a *Agent) SetLostMode(active bool, intervalMin int) {
+	interval := clampLostModeInterval(intervalMin)
+
+	lostModeMu.Lock()
+	cambio := lostModeActive != active || lostModeIntervalMin != interval
+	lostModeActive = active
+	lostModeIntervalMin = interval
+	lostModeMu.Unlock()
+
+	if !cambio {
+		return
+	}
+
+	if active {
+		a.Logger.Infoln("SetLostMode: equipo marcado como PERDIDO, cadencia", interval, "min")
+		a.saveLostModeState(persistedLostMode{Active: true, IntervalMin: interval})
+		return
+	}
+
+	a.Logger.Infoln("SetLostMode: equipo RECUPERADO, se detiene la captura intensiva")
+	// Se borra el archivo en vez de escribir Active=false: el estado por omisión
+	// es "no está perdido", así que la ausencia del archivo ya lo dice, y no deja
+	// en el equipo un rastro de que alguna vez se lo marcó.
+	a.clearLostModeState()
+}
+
+// ResumeLostMode rearma el estado que dejó una ejecución anterior. Se llama una
+// vez, al arrancar el servicio, junto a ResumeAlarm.
+//
+// Sin esto, reiniciar el equipo —o el servicio— apagaría la captura hasta que
+// llegara el próximo push o el próximo tick de config, y en un equipo robado
+// ese "hasta que" puede no llegar nunca.
+func (a *Agent) ResumeLostMode() {
+	st, ok := a.loadLostModeState()
+	if !ok {
+		return
+	}
+
+	interval := clampLostModeInterval(st.IntervalMin)
+
+	lostModeMu.Lock()
+	lostModeActive = true
+	lostModeIntervalMin = interval
+	lostModeMu.Unlock()
+
+	a.Logger.Infoln("ResumeLostMode: el equipo seguía marcado como PERDIDO, cadencia", interval, "min")
+}
