@@ -200,6 +200,38 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// dos capturas no llegaban a solaparse; con la cadencia del modo perdido sí.
 	var geoRunning atomic.Bool
 
+	// lanzarCapturaGeo saca la captura del hilo del `select`. Antes corría en
+	// línea, y en macOS una sola puede costar hasta ~40 s (CoreLocation 20 s + la
+	// consulta de config + la degradación a IP 10 s). Con el piso de 300 s eso se
+	// toleraba; con la cadencia del modo perdido pasa a ser el estado normal, y
+	// bloquear el `select` atrasa `agent-hello` (30-60 s) hasta hacer que el equipo
+	// aparezca OFFLINE en la consola justo cuando más importa.
+	//
+	// Está en una función porque ahora hay DOS disparadores —el tick y el aviso del
+	// push— y duplicar el guard invitaba a que uno de los dos se olvidara de tomarlo.
+	//
+	// `GeoForceOn` se escribe sólo cuando se acaba de tomar la guardia, desde esta
+	// misma goroutine; el `Store(false)` diferido establece la relación de orden con
+	// la captura siguiente, así que no hay carrera con la que lo lee.
+	lanzarCapturaGeo := func(forceOn bool) {
+		if geoRunning.CompareAndSwap(false, true) {
+			a.GeoForceOn = forceOn
+			go func() {
+				defer geoRunning.Store(false)
+				a.NatsMessage(nc, "agent-geolocation")
+			}()
+			return
+		}
+		// Con cadencias cortas una captura lenta puede pisar a la siguiente. Se
+		// salta el turno en vez de apilarlas.
+		a.Logger.Debugln("geo: la captura anterior sigue corriendo, se salta este turno")
+	}
+
+	// Última cadencia normal conocida, para poder volver a ella cuando el modo
+	// perdido se apaga por el push. La del arranque sirve de punto de partida y
+	// cada tick la refresca con lo que diga el servidor.
+	geoConfSeg := conf.Geo
+
 	for {
 		select {
 		case <-checkInHelloTicker.C:
@@ -239,6 +271,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			}
 
 			perdido, perdidoIntervaloMin := a.getLostMode()
+			geoConfSeg = geoConf.Geo
 
 			// Si el intervalo vigente cambió, se re-arma. Cubre el caso del arranque
 			// sin red, que dejaba puesto el intervalo del repliegue en vez del real,
@@ -277,24 +310,35 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// Se escribe desde ESTA goroutine y sólo cuando se acaba de tomar la
 			// guardia; el `Store(false)` diferido establece la relación de orden con
 			// el tick siguiente, así que no hay carrera con la captura que lo lee.
-			if geoRunning.CompareAndSwap(false, true) {
-				a.GeoForceOn = geoConf.GeoForceOn || perdido
+			lanzarCapturaGeo(geoConf.GeoForceOn || perdido)
 
-				// La captura sale del hilo del `select`. Antes corría en línea, y
-				// en macOS una sola puede costar hasta ~40 s (CoreLocation 20 s +
-				// la consulta de config + la degradación a IP 10 s). Con el piso de
-				// 300 s eso se toleraba; con la cadencia del modo perdido pasa a ser
-				// el estado normal, y bloquear el `select` atrasa `agent-hello`
-				// (30-60 s) hasta hacer que el equipo aparezca OFFLINE en la consola
-				// justo cuando más importa. Mismo patrón que syncMeshTicker.
-				go func() {
-					defer geoRunning.Store(false)
-					a.NatsMessage(nc, "agent-geolocation")
-				}()
-			} else {
-				// Con cadencias cortas una captura lenta puede pisar a la
-				// siguiente. Se salta el tick en vez de apilarlas.
-				a.Logger.Debugln("geo: la captura anterior sigue corriendo, se salta este tick")
+		// Feature 030 · el estado del modo perdido cambió por el push de NATS.
+		//
+		// Sin este case, el push fijaba el estado al instante y la cadencia del caso
+		// recién empezaba en el tick normal siguiente: 3 min 20 s medidos en terreno
+		// el 2026-08-11, y 25 a 35 min con el `checkin_geo` por omisión del producto,
+		// con el equipo encendido y en línea. El estado llegaba a tiempo y no se
+		// aplicaba donde hacía falta — el mismo error que ya se corrigió en el
+		// arranque y en el reinicio.
+		case <-lostModeChanged:
+			perdido, perdidoIntervaloMin := a.getLostMode()
+
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geoConfSeg); nuevo != geoInterval {
+				a.Logger.Debugf("geo: intervalo %ds -> %ds por aviso de modo perdido (%v)", geoInterval, nuevo, perdido)
+				geoInterval = nuevo
+				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
+			}
+
+			// Al ENTRAR se captura de inmediato, sin esperar el primer tick de la
+			// cadencia nueva. Con una cadencia de 60 min, esperarlo sería una hora
+			// sin un solo punto justo después de que alguien denunció el robo; y el
+			// primer punto —dónde estaba el equipo al momento del marcaje— es el más
+			// valioso del caso. Al SALIR no se captura: recuperar es dejar de mirar.
+			//
+			// El force-on va encendido por la misma razón que en el tick: en Windows
+			// 11 24H2 el escaneo de BSSIDs exige la ubicación del sistema activada.
+			if perdido {
+				lanzarCapturaGeo(true)
 			}
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {

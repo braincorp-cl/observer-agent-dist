@@ -65,6 +65,28 @@ var (
 	lostModeIntervalMin = lostModeDefaultIntervalMin
 )
 
+// lostModeChanged avisa al bucle del servicio que el estado del modo perdido
+// cambió, para que re-arme el ticker de geo SIN esperar al próximo tick.
+//
+// Sin este aviso, el push por NATS fijaba el estado al instante y la cadencia del
+// caso recién empezaba en el tick normal siguiente: medido en terreno el
+// 2026-08-11, 3 min 20 s en un ambiente con `checkin_geo` de 300 s, y 25 a 35 min
+// con el valor por omisión del producto — con el equipo ENCENDIDO y en línea.
+//
+// Buffer de 1 y envío no bloqueante a propósito: `SetLostMode` puede llamarse
+// desde la goroutine del push mientras el bucle está ocupado, y un canal sin
+// buffer la dejaría colgada. Si ya hay un aviso pendiente, este se descarta sin
+// pérdida: el consumidor lee el ESTADO ACTUAL con getLostMode(), no un valor que
+// viaje por el canal.
+var lostModeChanged = make(chan struct{}, 1)
+
+func signalLostModeChanged() {
+	select {
+	case lostModeChanged <- struct{}{}:
+	default:
+	}
+}
+
 // clampLostModeInterval acota el intervalo en los dos extremos. Un valor
 // ausente o ilegible (<= 0 tras el parseo) cae al default en vez de al piso:
 // "no me dijeron" no es lo mismo que "me pidieron el mínimo".
@@ -196,6 +218,11 @@ func (a *Agent) SetLostMode(active bool, intervalMin int) {
 	if !cambio {
 		return
 	}
+
+	// El aviso va ANTES de tocar el disco: lo que el bucle necesita ya está en
+	// memoria, y una escritura lenta —o fallida— no debe retrasar el cambio de
+	// cadencia. El estado en disco es para sobrevivir al reinicio, no para esto.
+	signalLostModeChanged()
 
 	if active {
 		a.Logger.Infoln("SetLostMode: equipo marcado como PERDIDO, cadencia", interval, "min")

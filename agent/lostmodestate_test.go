@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Feature 030 · el estado de modo perdido que sobrevive al reinicio.
@@ -240,5 +241,74 @@ func TestModoPerdidoNoBajaDelMinutoEnElTicker(t *testing.T) {
 			t.Errorf("con intervalo %d el ticker quedó en %ds, por debajo del mínimo de %ds",
 				min, got, lostModeMinIntervalMin*60)
 		}
+	}
+}
+
+// Feature 030 · el aviso que despierta al bucle del servicio.
+//
+// Es la prueba del hallazgo de terreno del 2026-08-11: el push fijaba el estado
+// al instante y la cadencia del caso recién empezaba en el tick normal siguiente
+// —25 a 35 min con el `checkin_geo` por omisión, con el equipo encendido—. Lo que
+// se puede probar acá es el aviso; que el bucle lo consuma vive en `AgentSvc()` y
+// sólo corre con un servicio real contra NATS (W-030-20).
+func TestSetLostModeAvisaAlBucle(t *testing.T) {
+	a := agenteDePrueba(t)
+	drenar := func() {
+		for {
+			select {
+			case <-lostModeChanged:
+			default:
+				return
+			}
+		}
+	}
+	hayAviso := func() bool {
+		select {
+		case <-lostModeChanged:
+			return true
+		default:
+			return false
+		}
+	}
+
+	drenar()
+
+	a.SetLostMode(true, 1)
+	if !hayAviso() {
+		t.Error("marcar como perdido no avisó al bucle: la cadencia del caso esperaría al próximo tick")
+	}
+
+	// Sin cambio real no hay aviso: un re-marcaje idéntico llega por los dos
+	// canales (push y polling) y no tiene por qué re-armar el ticker.
+	a.SetLostMode(true, 1)
+	if hayAviso() {
+		t.Error("un SetLostMode sin cambio avisó igual")
+	}
+
+	a.SetLostMode(false, 0)
+	if !hayAviso() {
+		t.Error("recuperar no avisó al bucle: la cadencia intensiva seguiría hasta el próximo tick")
+	}
+}
+
+// El aviso NO puede bloquear a quien lo emite: SetLostMode corre en la goroutine
+// del push por NATS, y si el bucle está ocupado —una captura de geo en macOS
+// puede costar 40 s— un canal sin buffer dejaría esa goroutine colgada y el push
+// sin responder. Dos cambios seguidos sin consumidor tienen que pasar de largo.
+func TestElAvisoNoBloqueaAunqueNadieEscuche(t *testing.T) {
+	a := agenteDePrueba(t)
+
+	hecho := make(chan struct{})
+	go func() {
+		a.SetLostMode(true, 1)
+		a.SetLostMode(false, 0)
+		a.SetLostMode(true, 5)
+		close(hecho)
+	}()
+
+	select {
+	case <-hecho:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SetLostMode quedó bloqueado esperando que alguien leyera el aviso")
 	}
 }
