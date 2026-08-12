@@ -58,29 +58,47 @@ func (a *Agent) NatsMessage(nc *nats.Conn, mode string) {
 			PublicIP: a.PublicIP(),
 		}
 	case "agent-geolocation":
-		// Feature 023. Solo se publica cuando hay un fix con coordenadas
-		// (native/wifi/ip). Estados denied/unavailable NO generan punto
-		// (privacidad + CONTRACT-01: nada de filas con coordenadas nulas).
-		loc := a.GetLocation()
-		if !loc.HasFix() {
-			a.Logger.Debugln("geo: sin fix, no se publica")
-			return
-		}
-		payload = ormm.GeoNats{
-			Func:       "geo",
-			Agentid:    a.AgentID,
-			Version:    a.Version,
-			Lat:        loc.Lat,
-			Long:       loc.Long,
-			AccuracyM:  loc.AccuracyM,
-			Source:     loc.Source,
-			CapturedAt: loc.CapturedAt.Unix(),
-		}
+		// Feature 023. La medición y la publicación viven en PublishGeo porque el
+		// ciclo del modo perdido (feature 030) necesita las dos por separado: mide
+		// una sola vez y usa el MISMO punto para publicarlo acá y para adjuntarlo
+		// a la evidencia. Medirlo dos veces costaría hasta 40 s de más en macOS y,
+		// peor, dejaría el punto del mapa y el de la evidencia en instantes
+		// distintos — dos respuestas para la misma pregunta.
+		a.PublishGeo(nc, a.GetLocation())
+		return
 	}
 
 	a.Logger.Debugln(mode, payload)
 	ret.Encode(payload)
 	nc.PublishRequest(a.AgentID, mode, resp)
+}
+
+// PublishGeo publica por NATS un punto YA MEDIDO.
+//
+// Sólo se publica cuando hay un fix con coordenadas (native/wifi/ip). Los
+// estados denied/unavailable NO generan punto: es privacidad y es CONTRACT-01
+// —nada de filas con coordenadas nulas—, y además una fila "sin fix" en el
+// recorrido de un caso de robo se ve igual que una posición y no lo es.
+func (a *Agent) PublishGeo(nc *nats.Conn, loc Location) {
+	if !loc.HasFix() {
+		a.Logger.Debugln("geo: sin fix, no se publica")
+		return
+	}
+
+	var resp []byte
+	ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+	ret.Encode(ormm.GeoNats{
+		Func:       "geo",
+		Agentid:    a.AgentID,
+		Version:    a.Version,
+		Lat:        loc.Lat,
+		Long:       loc.Long,
+		AccuracyM:  loc.AccuracyM,
+		Source:     loc.Source,
+		CapturedAt: loc.CapturedAt.Unix(),
+	})
+
+	nc.PublishRequest(a.AgentID, "agent-geolocation", resp)
 }
 
 func (a *Agent) DoNatsCheckIn() {

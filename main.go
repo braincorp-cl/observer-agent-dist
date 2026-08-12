@@ -126,6 +126,13 @@ func main() {
 		// contexto del usuario de consola, porque CoreLocation no atiende a la
 		// sesión 0. Imprime una sola línea (FIX/DENIED/NOFIX) que el padre parsea.
 		a.RunGeoProbe()
+	case "screencapture":
+		// Feature 030 (Windows): el servicio se re-ejecuta con este modo DENTRO
+		// de la sesión del usuario, porque un BitBlt hecho desde la sesión 0 no
+		// falla — devuelve una pantalla negra. Imprime una sola línea
+		// (OK <ruta> / FAIL <motivo>) que el padre parsea. El nombre del archivo
+		// llega como argumento posicional, igual que en `-m getenv`.
+		a.RunScreenCapture(flag.Arg(0))
 	case "getpython":
 		a.GetPython(true)
 	case "installdeno":

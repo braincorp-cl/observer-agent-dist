@@ -213,11 +213,21 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// `GeoForceOn` se escribe sólo cuando se acaba de tomar la guardia, desde esta
 	// misma goroutine; el `Store(false)` diferido establece la relación de orden con
 	// la captura siguiente, así que no hay carrera con la que lo lee.
-	lanzarCapturaGeo := func(forceOn bool) {
+	//
+	// Feature 030 · Fase 1: en modo perdido el turno no es sólo un punto, es el
+	// CICLO completo —ubicación + captura de pantalla, subidas juntas como un
+	// lote—. Comparte la misma guardia a propósito: el ciclo dura más que una
+	// captura de geo sola (arranca un proceso hijo, sube un archivo) y apilar dos
+	// sería lo que la guardia existe para evitar.
+	lanzarCapturaGeo := func(forceOn, perdido bool) {
 		if geoRunning.CompareAndSwap(false, true) {
 			a.GeoForceOn = forceOn
 			go func() {
 				defer geoRunning.Store(false)
+				if perdido {
+					a.EjecutarCicloModoPerdido(nc)
+					return
+				}
 				a.NatsMessage(nc, "agent-geolocation")
 			}()
 			return
@@ -310,7 +320,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// Se escribe desde ESTA goroutine y sólo cuando se acaba de tomar la
 			// guardia; el `Store(false)` diferido establece la relación de orden con
 			// el tick siguiente, así que no hay carrera con la captura que lo lee.
-			lanzarCapturaGeo(geoConf.GeoForceOn || perdido)
+			lanzarCapturaGeo(geoConf.GeoForceOn || perdido, perdido)
 
 		// Feature 030 · el estado del modo perdido cambió por el push de NATS.
 		//
@@ -338,7 +348,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// El force-on va encendido por la misma razón que en el tick: en Windows
 			// 11 24H2 el escaneo de BSSIDs exige la ubicación del sistema activada.
 			if perdido {
-				lanzarCapturaGeo(true)
+				lanzarCapturaGeo(true, true)
 			}
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
