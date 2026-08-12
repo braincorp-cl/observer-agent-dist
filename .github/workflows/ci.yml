@@ -1,12 +1,22 @@
 name: Run tests
 
 on:
+  # `**` y no `*`: en los filtros de rama de GitHub el `*` NO cruza barras, asi
+  # que con `"*"` este workflow no corria en NINGUNA rama de trabajo
+  # (`fix/030-...`, `feature/...`) pese a declarar que queria correr en todas.
+  # El sintoma es traicionero: `gh run list --commit <sha>` devuelve vacio, y el
+  # vacio se lee como "todavia no arranco" cuando en realidad no iba a arrancar
+  # nunca. Medido el 2026-08-11 con la rama de la Fase 0 de la 030.
   push:
     branches:
-      - "*"
+      - "**"
+  # Aca el filtro es la rama DESTINO, que no lleva barras (`main`), asi que el
+  # `*` alcanzaba. Se deja igual que el de arriba por consistencia: dos globs
+  # distintos en el mismo archivo invitan a suponer que la diferencia significa
+  # algo.
   pull_request:
     branches:
-      - "*"
+      - "**"
 
 jobs:
   no-legacy:
