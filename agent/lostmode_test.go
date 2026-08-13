@@ -22,7 +22,7 @@ func TestCamposEvidenciaConFix(t *testing.T) {
 		CapturedAt: time.Date(2026, 8, 12, 15, 4, 5, 0, time.UTC),
 	}
 
-	campos := camposEvidencia(loc, ScreenShot{Path: "/tmp/pantalla.png"}, "ana")
+	campos := camposEvidencia(loc, ScreenShot{Path: "/tmp/pantalla.png"}, WebcamShot{}, "ana")
 
 	quiere := map[string]string{
 		"captured_at":  "1786547045",
@@ -50,7 +50,7 @@ func TestCamposEvidenciaSinFixNoInventaCoordenadas(t *testing.T) {
 	// posición. Mandar (0,0) sería Null Island entrando como si fuera un lugar.
 	loc := Location{Source: SourceDenied, CapturedAt: time.Now().UTC()}
 
-	campos := camposEvidencia(loc, ScreenShot{Reason: captureNoSession}, "")
+	campos := camposEvidencia(loc, ScreenShot{Reason: captureNoSession}, WebcamShot{}, "")
 
 	for _, k := range []string{"lat", "lng", "accuracy_m"} {
 		if _, hay := campos[k]; hay {
@@ -75,6 +75,7 @@ func TestCamposEvidenciaSesionVaciaEsUnDato(t *testing.T) {
 	campos := camposEvidencia(
 		Location{Source: SourceUnavailable, CapturedAt: time.Now().UTC()},
 		ScreenShot{Reason: captureNoSession},
+		WebcamShot{},
 		"",
 	)
 
@@ -95,9 +96,55 @@ func TestCamposEvidenciaPrecisionDeCoordenadas(t *testing.T) {
 		CapturedAt: time.Now().UTC(),
 	}
 
-	campos := camposEvidencia(loc, ScreenShot{Path: "/tmp/x.png"}, "ana")
+	campos := camposEvidencia(loc, ScreenShot{Path: "/tmp/x.png"}, WebcamShot{}, "ana")
 
 	if campos["lat"] != "-0.0000001" {
 		t.Errorf("lat = %q, se esperaba -0.0000001 sin notación científica", campos["lat"])
+	}
+}
+
+// ── Feature 030 · Fase 2 · la webcam en los campos del ciclo ─────────────────
+
+func TestCamposEvidenciaWebcamApagadaNoMandaMotivo(t *testing.T) {
+	// La distinción que esta prueba protege: "apagada" no es "falló". Si el campo
+	// viajara con la webcam apagada, el servidor crearía una fila de webcam por
+	// ciclo y la línea de tiempo de una flota que nunca la activó se llenaría de
+	// mensajes sobre una cámara que nadie pidió usar.
+	campos := camposEvidencia(
+		Location{Source: SourceNative, CapturedAt: time.Now().UTC()},
+		ScreenShot{Path: "/tmp/x.png"},
+		WebcamShot{}, // apagada: ni ruta ni motivo
+		"ana",
+	)
+
+	if v, hay := campos["webcam_reason"]; hay {
+		t.Errorf("con la webcam apagada no tenía que viajar webcam_reason, llegó %q", v)
+	}
+}
+
+func TestCamposEvidenciaWebcamConMotivoLoManda(t *testing.T) {
+	campos := camposEvidencia(
+		Location{Source: SourceNative, CapturedAt: time.Now().UTC()},
+		ScreenShot{Path: "/tmp/x.png"},
+		WebcamShot{Reason: webcamDenied},
+		"ana",
+	)
+
+	if campos["webcam_reason"] != webcamDenied {
+		t.Errorf("webcam_reason = %q, se esperaba %q", campos["webcam_reason"], webcamDenied)
+	}
+}
+
+func TestCamposEvidenciaWebcamConFotoNoMandaMotivo(t *testing.T) {
+	// Con foto no hay motivo: el contrato es "o archivo, o motivo, nunca los dos".
+	campos := camposEvidencia(
+		Location{Source: SourceNative, CapturedAt: time.Now().UTC()},
+		ScreenShot{Path: "/tmp/x.png"},
+		WebcamShot{Path: "/tmp/webcam.jpg"},
+		"ana",
+	)
+
+	if v, hay := campos["webcam_reason"]; hay {
+		t.Errorf("con foto no tenía que viajar webcam_reason, llegó %q", v)
 	}
 }

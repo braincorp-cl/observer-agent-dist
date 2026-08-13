@@ -52,6 +52,11 @@ type AgentCheckInConfig struct {
 	// marcaron se entera acá al reconectar.
 	LostMode            bool `json:"lost_mode"`
 	LostModeIntervalMin int  `json:"lost_mode_interval_min"`
+	// Feature 030 · Fase 2: interruptor GLOBAL de la foto de webcam. Apagado de
+	// fábrica y global a propósito — fotografiar la cara de una persona es
+	// cualitativamente más sensible que ubicar un activo (ADR-025), así que
+	// actualizar el producto NO puede empezar a hacerlo solo.
+	LostModeWebcam bool `json:"lost_mode_webcam"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
@@ -120,6 +125,14 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// apagaría el estado que ResumeLostMode acaba de restaurar desde el disco.
 	if conf.fromServer {
 		a.SetLostMode(conf.LostMode, conf.LostModeIntervalMin)
+		// La webcam NO se persiste en disco, a diferencia del estado del modo
+		// perdido, y la asimetría es deliberada. El estado persiste porque un
+		// equipo robado se reinicia y el caso tiene que seguir. El permiso de
+		// fotografiar una cara va al revés: si el operador lo apaga mientras el
+		// equipo está sin red, un valor guardado en disco lo dejaría sacando
+		// fotos hasta que reconecte. Sin red no hay foto, y ese es el lado
+		// correcto en el que fallar.
+		a.LostModeWebcam = conf.LostModeWebcam
 	}
 	// Gap 3: propaga el force-on al Agent para que osLocation lo lea antes de
 	// escanear. Global; solo el backend lo enciende (y solo si geo_tracking=ON).
@@ -409,6 +422,10 @@ func checkInConfFallback() AgentCheckInConfig {
 		// vino DE VERDAD del servidor.
 		LostMode:            false,
 		LostModeIntervalMin: 0,
+		// El repliegue deja la webcam APAGADA, y acá sí se aplica (a diferencia
+		// de LostMode): sin config del servidor no hay autorización vigente para
+		// fotografiar a nadie.
+		LostModeWebcam: false,
 	}
 }
 

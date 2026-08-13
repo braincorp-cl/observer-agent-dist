@@ -1,0 +1,149 @@
+package agent
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"os"
+	"time"
+)
+
+// Feature 030 · Fase 2 · contrato común de la foto de webcam (ADR-025).
+//
+// Mismo molde que la captura de pantalla (capture.go): cada SO implementa
+// `capturarWebcam` con su etiqueta de build y acá vive lo que no depende del
+// sistema. Lo que cambia respecto de la pantalla son tres cosas, y las tres
+// importan más de lo que parecen:
+//
+//  1. **LA WEBCAM NO NECESITA SESIÓN GRÁFICA.** La captura de pantalla depende
+//     de que alguien haya abierto sesión: sin escritorio no hay nada que
+//     capturar y el ciclo reporta `sin_sesion`. La cámara es un dispositivo del
+//     sistema, así que el agente la abre aunque el equipo esté en la pantalla de
+//     inicio de sesión. Para un equipo robado eso la vuelve MÁS útil que la
+//     pantalla, no menos: a quien se lo llevó se le puede tomar la foto antes de
+//     que entre a ninguna cuenta.
+//
+//  2. **EL LED SE ENCIENDE Y NO SE OCULTA.** Es hardware: en la enorme mayoría
+//     de los equipos el LED está cableado a la alimentación del sensor y no hay
+//     API que lo apague. La foto NUNCA es invisible, ADR-025 lo asume
+//     explícitamente y el producto lo documenta en vez de prometer lo contrario.
+//     Cualquier intento de ocultarlo sería, además del peor camino legal, una
+//     promesa que el hardware no puede cumplir.
+//
+//  3. **LOS PRIMEROS CUADROS SALEN NEGROS.** No es una avería: el sensor arranca
+//     con la exposición automática sin converger y entrega varios cuadros
+//     oscuros o completamente negros antes de estabilizar. Una implementación
+//     que pida "un cuadro" a la cámara obtiene, casi siempre, ese primer cuadro
+//     negro — y ahí nace el "ok falso" de esta fase: una foto negra que parece
+//     evidencia. Por eso cada plataforma DESCARTA cuadros de calentamiento y
+//     entrega uno posterior; ver `cuadrosDeCalentamiento`.
+
+// Motivos por los que un ciclo no trae foto. Códigos, no texto: viajan al
+// servidor y los traduce el catálogo i18n de la consola, igual que los de la
+// captura de pantalla.
+const (
+	// El equipo no tiene ninguna cámara. En una VM del datacenter es lo normal,
+	// y es un dato del caso: ese equipo no va a dar fotos nunca.
+	webcamNoDevice = "sin_camara"
+	// La cámara existe pero otro programa la tiene tomada. Es información útil
+	// del caso —alguien está en una videollamada— y no un fallo del producto.
+	webcamBusy = "camara_ocupada"
+	// No hay ninguna herramienta de captura de cámara instalada (Linux).
+	webcamNoTool = "sin_herramienta"
+	// El SO niega el permiso de cámara. En macOS es el caso NORMAL y no una
+	// excepción: TCC no se concede por administración remota.
+	webcamDenied = "permiso_denegado"
+	// Se obtuvo una imagen, pero después de descartar los cuadros de
+	// calentamiento seguía completamente negra. Cubre tres situaciones que el
+	// agente NO puede distinguir entre sí, y por eso el código es uno solo: la
+	// tapa de privacidad puesta, la habitación a oscuras, o un controlador que
+	// entrega cuadros vacíos. Las tres se ven igual desde acá, y decir cuál es
+	// sería inventar.
+	webcamNoImage = "camara_sin_imagen"
+	// La herramienta corrió y falló, o el archivo salió vacío/ilegible.
+	webcamFailed = "fallo_captura"
+	// Plataforma sin implementación de cámara.
+	webcamUnsupported = "so_no_soportado"
+)
+
+// cuadrosDeCalentamiento es cuántos cuadros se descartan antes de quedarse con
+// uno. Ver la decisión 3 del encabezado.
+//
+// 20 no es un número mágico ni una cifra copiada: es el orden de magnitud que
+// necesita la exposición automática de una webcam típica a 30 cuadros por
+// segundo, o sea unos dos tercios de segundo. Subirlo alarga la captura sin
+// ganar nada; bajarlo devuelve la foto negra que esta constante existe para
+// evitar.
+const cuadrosDeCalentamiento = 20
+
+// WebcamShot es el resultado de intentar una foto. O trae `Path`, o trae
+// `Reason`: nunca las dos ni ninguna. Mismo contrato que `ScreenShot`.
+type WebcamShot struct {
+	Path   string
+	Reason string
+}
+
+// OK indica si hay un archivo que subir.
+func (w WebcamShot) OK() bool { return w.Path != "" }
+
+// webcamFilename arma el nombre con el reloj del EQUIPO, igual que la captura
+// de pantalla, y por el mismo motivo: entre el reloj del equipo y el del
+// servidor puede haber horas si estuvo sin red.
+//
+// Extensión `.jpg` porque es lo que entregan las cámaras y las herramientas que
+// las manejan. La verificación de imagen en negro decodifica por contenido, no
+// por extensión, así que un PNG tampoco la rompería.
+func webcamFilename(t time.Time) string {
+	return fmt.Sprintf("webcam-%s.jpg", t.UTC().Format("20060102-150405"))
+}
+
+// CaptureWebcam intenta una foto y devuelve el resultado ya verificado.
+//
+// La verificación es la misma idea que en la pantalla y por la misma razón: lo
+// único que distingue el éxito del fracaso es MIRAR los píxeles. Una cámara sin
+// permiso, con la tapa puesta o con el controlador roto entrega un archivo
+// perfectamente formado, del tamaño esperado, y con `exit 0`.
+func (a *Agent) CaptureWebcam() WebcamShot {
+	shot := a.capturarWebcam(webcamFilename(time.Now()))
+	if !shot.OK() {
+		return shot
+	}
+
+	// Igual que la captura de pantalla: mientras espera la subida es la foto de
+	// la CARA de una persona. Se cierra a 0600 en cuanto existe.
+	if err := os.Chmod(shot.Path, 0600); err != nil {
+		a.Logger.Debugln("CaptureWebcam: no se pudo restringir el permiso del archivo:", err)
+	}
+
+	data, err := os.ReadFile(shot.Path)
+	if err != nil || len(data) == 0 {
+		a.Logger.Debugln("CaptureWebcam: el archivo capturado no se pudo leer:", err)
+		_ = os.Remove(shot.Path)
+		return WebcamShot{Reason: webcamFailed}
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		// No se pudo decodificar. A diferencia de la pantalla —donde el formato
+		// lo decide el SO y se deja pasar— acá una imagen ilegible se descarta:
+		// la cámara siempre entrega JPEG o PNG, así que un archivo que no
+		// decodifica es una captura a medio escribir, no un formato exótico.
+		a.Logger.Debugln("CaptureWebcam: la imagen no se pudo decodificar, se descarta:", err)
+		_ = os.Remove(shot.Path)
+		return WebcamShot{Reason: webcamFailed}
+	}
+
+	if imagenEnNegro(img) {
+		// Ya se descartaron los cuadros de calentamiento en la capa de
+		// plataforma, así que llegar acá significa que la imagen está negra por
+		// algo que el agente no puede ver: la tapa, la oscuridad o el
+		// controlador. Se reporta el motivo y NO se sube la foto.
+		a.Logger.Infoln("CaptureWebcam: la foto salió completamente en negro tras el calentamiento, se descarta")
+		_ = os.Remove(shot.Path)
+		return WebcamShot{Reason: webcamNoImage}
+	}
+
+	return shot
+}

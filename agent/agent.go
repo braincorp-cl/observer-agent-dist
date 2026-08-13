@@ -34,15 +34,18 @@ import (
 
 // Agent struct
 type Agent struct {
-	Hostname           string
-	Arch               string
-	AgentID            string
-	BaseURL            string
-	ApiURL             string
-	Token              string
-	AgentPK            int
-	Cert               string
-	ProgramDir         string
+	Hostname   string
+	Arch       string
+	AgentID    string
+	BaseURL    string
+	ApiURL     string
+	Token      string
+	AgentPK    int
+	Cert       string
+	ProgramDir string
+	// Feature 030 · Fase 2: interruptor global de la foto de webcam, refrescado
+	// desde la config del servidor. En memoria y nunca en disco (ver svc.go).
+	LostModeWebcam     bool
 	EXE                string
 	SystemDrive        string
 	WinTmpDir          string

@@ -1,0 +1,110 @@
+package agent
+
+import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Feature 030 · Fase 2 · lo que se puede probar sin cámara.
+//
+// Sin hardware no hay forma de probar la captura en sí, y este archivo NO
+// finge que la prueba. Lo que sí se prueba es lo que puede fallar en silencio:
+// el nombre del archivo (viaja a un multipart, a tres sistemas de archivos y a
+// una URL) y la verificación de imagen en negro sobre JPEG, que es el formato
+// que entregan las cámaras y que la Fase 1 nunca tuvo que decodificar.
+
+func TestWebcamFilenameEsASCIIPlanoYOrdenable(t *testing.T) {
+	// Los dos puntos del formato ISO son ilegales en nombres de archivo de
+	// Windows, y el nombre termina siendo una ruta en disco en los tres SO.
+	n := webcamFilename(time.Date(2026, 8, 13, 4, 5, 6, 0, time.UTC))
+
+	if n != "webcam-20260813-040506.jpg" {
+		t.Fatalf("nombre = %q", n)
+	}
+	for _, prohibido := range []string{":", " ", "/", "\\"} {
+		if strings.Contains(n, prohibido) {
+			t.Errorf("el nombre no puede contener %q: %q", prohibido, n)
+		}
+	}
+}
+
+func TestWebcamFilenameOrdenaCronologicamente(t *testing.T) {
+	// El nombre lleva la hora justamente para que ordenar por nombre sea ordenar
+	// por tiempo cuando alguien mira el directorio a mano en un peritaje.
+	antes := webcamFilename(time.Date(2026, 8, 13, 4, 5, 6, 0, time.UTC))
+	despues := webcamFilename(time.Date(2026, 8, 13, 4, 5, 7, 0, time.UTC))
+
+	if !(antes < despues) {
+		t.Errorf("%q tenía que ordenar antes que %q", antes, despues)
+	}
+}
+
+// jpegDeUnColor arma un JPEG real del color pedido. Real y no un fixture: lo que
+// se quiere probar es que el decodificador de JPEG se enchufa bien con la
+// verificación de negro, y un array de bytes inventado no probaría eso.
+func jpegDeUnColor(c color.Color, ancho, alto int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, ancho, alto))
+	for x := 0; x < ancho; x++ {
+		for y := 0; y < alto; y++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90})
+	return buf.Bytes()
+}
+
+func TestJPEGNegroSeDetecta(t *testing.T) {
+	// El caso que importa: la tapa de privacidad puesta, la habitación a oscuras
+	// o un controlador que entrega cuadros vacíos. Los tres dan esto, y los tres
+	// tienen que terminar en `camara_sin_imagen` y no en una foto subida.
+	img, _, err := image.Decode(bytes.NewReader(jpegDeUnColor(color.Black, 640, 480)))
+	if err != nil {
+		t.Fatalf("no se pudo decodificar el JPEG de prueba: %v", err)
+	}
+
+	if !imagenEnNegro(img) {
+		t.Error("un JPEG completamente negro tenía que detectarse como negro")
+	}
+}
+
+func TestJPEGConContenidoNoSeDescarta(t *testing.T) {
+	// El error caro es el otro: descartar una foto buena. Un JPEG de un gris
+	// oscuro —una habitación con poca luz, que es evidencia perfectamente
+	// válida— no puede leerse como negro.
+	img, _, err := image.Decode(bytes.NewReader(jpegDeUnColor(color.RGBA{R: 40, G: 40, B: 45, A: 255}, 640, 480)))
+	if err != nil {
+		t.Fatalf("no se pudo decodificar el JPEG de prueba: %v", err)
+	}
+
+	if imagenEnNegro(img) {
+		t.Error("una foto oscura pero con contenido no se puede descartar como negra")
+	}
+}
+
+func TestWebcamShotContratoExcluyente(t *testing.T) {
+	// O archivo, o motivo: nunca los dos ni ninguno. Lo mismo que ScreenShot.
+	if (WebcamShot{Path: "/tmp/x.jpg"}).OK() != true {
+		t.Error("una pieza con ruta tiene que ser OK")
+	}
+	if (WebcamShot{Reason: webcamDenied}).OK() != false {
+		t.Error("una pieza con motivo no puede ser OK")
+	}
+	if (WebcamShot{}).OK() != false {
+		t.Error("una pieza vacía (webcam apagada) no puede ser OK")
+	}
+}
+
+func TestCuadrosDeCalentamientoNoEsCero(t *testing.T) {
+	// La constante ES la feature: pedir "un cuadro" a una webcam devuelve el
+	// primero, que sale negro porque la exposición automática no convergió. Si
+	// alguien la pone en 0 "para que sea más rápido", vuelve el ok falso.
+	if cuadrosDeCalentamiento < 5 {
+		t.Errorf("cuadrosDeCalentamiento = %d: por debajo de ~5 vuelve la foto negra del primer cuadro", cuadrosDeCalentamiento)
+	}
+}
