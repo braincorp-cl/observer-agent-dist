@@ -1,13 +1,17 @@
-//go:build !linux && !darwin && !windows
-// +build !linux,!darwin,!windows
+//go:build !windows
+// +build !windows
 
 package agent
 
-// Feature 030 · Fase 2 · plataformas sin implementación de cámara.
+import "fmt"
+
+// Feature 030 · Fase 2 · el modo `-m webcamcapture` sólo tiene trabajo en
+// Windows, donde la foto la saca el propio agente por Media Foundation.
 //
-// Existe para que el árbol compile fuera de los tres SO de la flota. Devuelve
-// el motivo explícito en vez de un error genérico: "este sistema operativo no
-// toma fotos" es un dato del caso, no una avería.
-func (a *Agent) capturarWebcam(nombre string) WebcamShot {
-	return WebcamShot{Reason: webcamUnsupported}
+// En Linux y macOS la saca una herramienta del sistema y el agente nunca se
+// re-ejecuta, así que acá sólo hace falta que el despacho de modos de main.go
+// —que es portable— siga compilando. Mismo motivo y mismo contrato de una línea
+// que `capture_other.go`.
+func (a *Agent) RunWebcamCapture(nombre string) {
+	fmt.Println(prefijoCapturaFallo + webcamUnsupported)
 }

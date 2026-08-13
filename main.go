@@ -133,6 +133,13 @@ func main() {
 		// (OK <ruta> / FAIL <motivo>) que el padre parsea. El nombre del archivo
 		// llega como argumento posicional, igual que en `-m getenv`.
 		a.RunScreenCapture(flag.Arg(0))
+	case "webcamcapture":
+		// Feature 030 (Windows): NO lo usa el ciclo del modo perdido, que saca la
+		// foto en el propio servicio. Existe para poder medir la cámara de un
+		// equipo real sin marcarlo como perdido — marcarlo subiría además
+		// capturas de su pantalla y su ubicación. Imprime una sola línea
+		// (OK <archivo> <ruta> / FAIL <motivo>), igual que `-m screencapture`.
+		a.RunWebcamCapture(flag.Arg(0))
 	case "getpython":
 		a.GetPython(true)
 	case "installdeno":
