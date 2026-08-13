@@ -136,7 +136,7 @@ func (a *Agent) CaptureWebcam() WebcamShot {
 		return WebcamShot{Reason: webcamFailed}
 	}
 
-	if imagenEnNegro(img) {
+	if fotoSinImagen(img) {
 		// Ya se descartaron los cuadros de calentamiento en la capa de
 		// plataforma, así que llegar acá significa que la imagen está negra por
 		// algo que el agente no puede ver: la tapa, la oscuridad o el
@@ -168,4 +168,68 @@ func (a *Agent) CaptureWebcam() WebcamShot {
 // la captura por buena fue la comprobación de tamaño de `capturarWebcam`.
 func destinoFotoWebcam(nombre string) string {
 	return filepath.Join(os.TempDir(), filepath.Base(nombre))
+}
+
+// negroMedioMax es el brillo MEDIO por canal bajo el cual una foto de webcam se
+// considera sin imagen.
+//
+// Es un criterio distinto del de la pantalla (`negroMax` + máximo por muestra) y
+// la diferencia la impuso el terreno del 2026-08-13 en un equipo real, con una
+// webcam integrada tapada: 15 capturas seguidas de la misma escena, todas con
+// brillo medio entre 1,3 y 3,6 sobre 255 —negras a la vista de cualquiera— y las
+// 15 clasificadas como imagen VÁLIDA por el criterio de la pantalla. Ninguna
+// disparó `camara_sin_imagen`.
+//
+// La razón es física y no se puede ajustar bajando el umbral: el sensor de una
+// cámara real tiene ruido térmico, así que en cualquier imagen oscura hay
+// píxeles sueltos por encima de cualquier umbral bajo. Un criterio de "ningún
+// píxel supera X" pregunta si existe UN píxel con luz, y en un sensor la
+// respuesta es siempre sí. Con `vivid` —la cámara virtual con la que se probó
+// primero— no se veía: entrega negro matemático, 0,0,0 exacto, sin ruido.
+//
+// El promedio sí es estable frente al ruido puntual, que es justamente lo que
+// hace falta acá. 12 sobre 255 es menos del 5% de brillo: una foto de una persona
+// en penumbra queda muy por encima, así que sigue valiendo el criterio de "ante
+// la duda, subir la evidencia".
+const negroMedioMax = 12
+
+// fotoSinImagen decide si la foto no muestra nada, que en una webcam es un
+// resultado distinto de un fallo y por eso tiene motivo propio.
+//
+// POR QUÉ NO SE REUSA `imagenEnNegro`: esa función responde "¿hay algo encendido
+// en esta pantalla?" y para una pantalla está bien —una ventanita blanca sobre
+// fondo negro es evidencia legítima y no hay que descartarla—. Acá la pregunta es
+// otra: "¿este sensor está viendo algo?". Con la tapa puesta o el cuarto a
+// oscuras la respuesta es no, y el ruido del sensor no la cambia.
+//
+// Que la distinción importe no es teórico: sin ella la línea de tiempo de un caso
+// se llena de fotos negras presentadas como evidencia buena, que además son
+// archivos de la cámara de una persona retenidos 90 días. El operador ve una
+// miniatura negra y no puede saber si es la tapa, la oscuridad o una avería —
+// exactamente lo que el motivo `camara_sin_imagen` existe para decirle.
+func fotoSinImagen(img image.Image) bool {
+	if img == nil {
+		return false
+	}
+
+	b := img.Bounds()
+	ancho, alto := b.Dx(), b.Dy()
+	if ancho < muestrasPorLado || alto < muestrasPorLado {
+		// Ante la duda no se descarta: mismo criterio que la pantalla.
+		return false
+	}
+
+	var suma uint64
+	for i := 0; i < muestrasPorLado; i++ {
+		for j := 0; j < muestrasPorLado; j++ {
+			x := b.Min.X + (ancho*i)/muestrasPorLado
+			y := b.Min.Y + (alto*j)/muestrasPorLado
+
+			r, g, bl, _ := img.At(x, y).RGBA()
+			suma += uint64(r>>8) + uint64(g>>8) + uint64(bl>>8)
+		}
+	}
+
+	muestras := uint64(muestrasPorLado) * uint64(muestrasPorLado) * 3
+	return suma/muestras <= negroMedioMax
 }

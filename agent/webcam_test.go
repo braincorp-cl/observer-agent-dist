@@ -146,3 +146,75 @@ func TestDestinoDeLaFotoNoDependeDeProgramDir(t *testing.T) {
 		t.Errorf("con ProgramFiles vacía —el estado real de todo Linux— el destino quedó en %q", destino)
 	}
 }
+
+// imagenConRuidoDeSensor construye una imagen oscura con ruido puntual, que es lo
+// que entrega una webcam real tapada. Los números salen de una medición: 15
+// capturas de una webcam integrada con la tapa puesta, el 2026-08-13, dieron
+// brillo medio entre 1,3 y 3,6 sobre 255 con píxeles sueltos llegando a 25.
+func imagenConRuidoDeSensor(medio, pico int) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, 320, 240))
+	for y := 0; y < 240; y++ {
+		for x := 0; x < 320; x++ {
+			v := medio
+			// Ruido puntual disperso, como el térmico de un sensor.
+			if (x*7+y*13)%97 == 0 {
+				v = pico
+			}
+			img.Set(x, y, color.RGBA{uint8(v), uint8(v), uint8(v), 255})
+		}
+	}
+	return img
+}
+
+// TestFotoSinImagenDetectaSensorTapado es el test que habría atrapado el ok falso
+// medido en terreno el 2026-08-13.
+//
+// La foto de webcam usaba `imagenEnNegro`, el criterio de la captura de pantalla:
+// "ninguna muestra de la grilla supera `negroMax`". En una webcam real eso no se
+// cumple nunca, porque el sensor tiene ruido térmico y siempre hay algún píxel por
+// encima de cualquier umbral bajo. Resultado medido en un equipo real con la
+// cámara tapada: **15 capturas de 15** clasificadas como imagen válida, todas con
+// brillo medio bajo 4 sobre 255 — negras a la vista de cualquiera.
+//
+// Con `vivid`, la cámara virtual con la que se probó primero, el bug era
+// invisible: entrega negro matemático exacto, sin ruido. Hizo falta un sensor de
+// verdad para verlo.
+func TestFotoSinImagenDetectaSensorTapado(t *testing.T) {
+	tapada := imagenConRuidoDeSensor(3, 25)
+
+	if !fotoSinImagen(tapada) {
+		t.Error("una webcam tapada (brillo medio 3/255 con ruido a 25) se dio por foto válida: eso sube una imagen negra como evidencia y le oculta al operador que la cámara está tapada")
+	}
+
+	// El control de la regresión: dejar escrito que el criterio de la PANTALLA no
+	// sirve acá. Si algún día esto pasa a ser `true`, es que alguien volvió a
+	// unificar los dos criterios.
+	if imagenEnNegro(tapada) {
+		t.Error("imagenEnNegro ahora sí detecta el ruido del sensor: revisar si sigue haciendo falta un criterio propio para la webcam")
+	}
+}
+
+// TestFotoSinImagenNoDescartaEvidenciaBuena es la otra mitad, y la que impide que
+// el arreglo se pase de listo: descartar una foto buena es peor que subir una
+// negra, porque la foto perdida no se recupera.
+func TestFotoSinImagenNoDescartaEvidenciaBuena(t *testing.T) {
+	casos := []struct {
+		nombre string
+		img    image.Image
+		quiero bool
+	}{
+		{"una cara en penumbra, con poca luz pero visible", imagenConRuidoDeSensor(40, 90), false},
+		{"una escena normal bien iluminada", imagenConRuidoDeSensor(120, 200), false},
+		{"negro perfecto, como el de una cámara virtual", imagenConRuidoDeSensor(0, 0), true},
+		{"justo en el umbral", imagenConRuidoDeSensor(negroMedioMax, negroMedioMax), true},
+		{"un pelo por encima del umbral", imagenConRuidoDeSensor(negroMedioMax+2, negroMedioMax+2), false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := fotoSinImagen(c.img); got != c.quiero {
+				t.Errorf("fotoSinImagen() = %v, se esperaba %v", got, c.quiero)
+			}
+		})
+	}
+}
