@@ -218,3 +218,39 @@ func TestFotoSinImagenNoDescartaEvidenciaBuena(t *testing.T) {
 		})
 	}
 }
+
+// TestScriptEstadoTCCCamaraNoDeclaraVariables es el guardián de W-030-F2-08, el
+// defecto que sólo el terreno podía destapar y que ninguna prueba veía.
+//
+// El script decía `set st to (…)`, y `st` es palabra reservada de AppleScript:
+// son los ordinales `1st`, `2nd`, `3rd`, `4th`. `osascript -e 'set st to 1'`
+// responde `-2741` **incluso sin `use framework`**, así que la consulta de
+// permiso fallaba SIEMPRE, `permisoDeCamaraConcedido` devolvía `false`
+// incondicionalmente y la cámara de macOS no se habría intentado ni con el
+// permiso concedido — publicando el mismo `permiso_denegado` que una denegación
+// real, indistinguible desde la consola.
+//
+// La prueba no compila AppleScript (no hay intérprete en la CI, que corre en
+// Linux): prohíbe la construcción que causó el bug. Un script que no declara
+// variables no puede chocar con una palabra reservada.
+func TestScriptEstadoTCCCamaraNoDeclaraVariables(t *testing.T) {
+	for _, linea := range strings.Split(scriptEstadoTCCCamara, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(linea), "set ") {
+			t.Errorf("el script declara una variable (%q). AppleScript reserva st/nd/rd/th "+
+				"—los ordinales— y un nombre de dos letras rompe el script ENTERO, "+
+				"dejando el preflight en false para siempre. Ver W-030-F2-08", strings.TrimSpace(linea))
+		}
+	}
+}
+
+// TestScriptEstadoTCCCamaraSigueConsultandoLaCamara impide que el guardián de
+// arriba se "cumpla" vaciando el script: sin estas dos piezas la consulta deja
+// de preguntar por el permiso de vídeo y el preflight volvería a mentir, ahora
+// en silencio y en verde.
+func TestScriptEstadoTCCCamaraSigueConsultandoLaCamara(t *testing.T) {
+	for _, pieza := range []string{"AVFoundation", "authorizationStatusForMediaType:", "AVMediaTypeVideo"} {
+		if !strings.Contains(scriptEstadoTCCCamara, pieza) {
+			t.Errorf("el script ya no contiene %q: dejó de consultar el permiso de Cámara", pieza)
+		}
+	}
+}

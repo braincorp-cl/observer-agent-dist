@@ -124,16 +124,14 @@ func (a *Agent) capturarWebcam(nombre string) WebcamShot {
 // habilita la captura: pedirla en el estado 0 dispararía el diálogo del sistema
 // **en la cara de quien tiene el equipo**, que en un caso de robo es justo lo
 // que no se quiere.
+//
+// El texto del script vive en `webcam.go`, sin etiqueta de plataforma, para que
+// la CI pueda vigilarlo: ver `scriptEstadoTCCCamara` y el terreno del 2026-08-13.
 func (a *Agent) permisoDeCamaraConcedido() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	const script = `use framework "AVFoundation"
-use scripting additions
-set st to (current application's AVCaptureDevice's authorizationStatusForMediaType:(current application's AVMediaTypeVideo))
-return (st as integer) as text`
-
-	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", script)
+	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", scriptEstadoTCCCamara)
 	if err != nil {
 		a.Logger.Debugln("permisoDeCamaraConcedido: sin sesión de usuario para consultar TCC:", err)
 		return false
@@ -151,7 +149,7 @@ return (st as integer) as text`
 		return false
 	}
 
-	return strings.TrimSpace(string(salida)) == "3"
+	return strings.TrimSpace(string(salida)) == estadoTCCCamaraConcedido
 }
 
 func elegirHerramientaWebcamDarwin() (string, []string, bool) {

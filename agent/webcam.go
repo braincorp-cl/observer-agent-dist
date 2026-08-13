@@ -170,6 +170,35 @@ func destinoFotoWebcam(nombre string) string {
 	return filepath.Join(os.TempDir(), filepath.Base(nombre))
 }
 
+// scriptEstadoTCCCamara consulta el permiso TCC de Cámara en macOS.
+//
+// Vive acá, SIN etiqueta de plataforma, por la misma razón que
+// `destinoFotoWebcam` y que el contrato de captura de `capture.go`: la CI corre
+// `go test` en Linux, así que un texto guardado dentro de `webcam_darwin.go` no
+// lo mira ninguna prueba. Este en particular se pagó caro.
+//
+// 🪤 EL SCRIPT NO DECLARA VARIABLES, Y ESO NO ES ESTILO. La versión anterior
+// decía `set st to (…)`, y **`st` es palabra reservada de AppleScript** —los
+// ordinales `1st`, `2nd`, `3rd`, `4th`—, así que **no compilaba nunca**:
+// `osascript -e 'set st to 1'` responde `-2741` incluso sin `use framework`.
+// Consecuencia medida en terreno el 2026-08-13 (MacBook M2 Pro, macOS 26.5.2):
+// `cmd.Output()` fallaba siempre, `permisoDeCamaraConcedido` devolvía `false`
+// **incondicionalmente** y la cámara no se habría intentado NI CON EL PERMISO
+// CONCEDIDO — publicando además el mismo `permiso_denegado` que una denegación
+// legítima, o sea indistinguible desde la consola. Devolver el valor sin pasar
+// por una variable no arregla ese nombre: elimina la clase entera de bug.
+//
+// Esta es la forma exacta que se midió respondiendo en el equipo real (devolvió
+// `0`, `AVAuthorizationStatusNotDetermined`).
+const scriptEstadoTCCCamara = `use framework "AVFoundation"
+use scripting additions
+return (current application's AVCaptureDevice's authorizationStatusForMediaType:(current application's AVMediaTypeVideo)) as text`
+
+// estadoTCCCamaraConcedido es el único valor de `AVAuthorizationStatus` que
+// habilita la captura: 3 = `Authorized`. 0 sin determinar, 1 restringido,
+// 2 denegado.
+const estadoTCCCamaraConcedido = "3"
+
 // negroMedioMax es el brillo MEDIO por canal bajo el cual una foto de webcam se
 // considera sin imagen.
 //
