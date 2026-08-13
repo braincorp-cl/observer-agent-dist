@@ -125,15 +125,18 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// apagaría el estado que ResumeLostMode acaba de restaurar desde el disco.
 	if conf.fromServer {
 		a.SetLostMode(conf.LostMode, conf.LostModeIntervalMin)
-		// La webcam NO se persiste en disco, a diferencia del estado del modo
-		// perdido, y la asimetría es deliberada. El estado persiste porque un
-		// equipo robado se reinicia y el caso tiene que seguir. El permiso de
-		// fotografiar una cara va al revés: si el operador lo apaga mientras el
-		// equipo está sin red, un valor guardado en disco lo dejaría sacando
-		// fotos hasta que reconecte. Sin red no hay foto, y ese es el lado
-		// correcto en el que fallar.
-		a.LostModeWebcam = conf.LostModeWebcam
 	}
+	// El interruptor de webcam NO se aplica acá aunque el dato ya esté: se escribe
+	// en un solo lugar, `lanzarCapturaGeo`, bajo la guardia `geoRunning`. Ver el
+	// comentario de esa función.
+	//
+	// La webcam tampoco se persiste en disco, a diferencia del estado del modo
+	// perdido, y la asimetría es deliberada. El estado persiste porque un equipo
+	// robado se reinicia y el caso tiene que seguir. El permiso de fotografiar una
+	// cara va al revés: si el operador lo apaga mientras el equipo está sin red, un
+	// valor guardado en disco lo dejaría sacando fotos hasta que reconecte. Sin red
+	// no hay foto, y ese es el lado correcto en el que fallar.
+
 	// Gap 3: propaga el force-on al Agent para que osLocation lo lea antes de
 	// escanear. Global; solo el backend lo enciende (y solo si geo_tracking=ON).
 	a.GeoForceOn = conf.GeoForceOn
@@ -232,9 +235,20 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// lote—. Comparte la misma guardia a propósito: el ciclo dura más que una
 	// captura de geo sola (arranca un proceso hijo, sube un archivo) y apilar dos
 	// sería lo que la guardia existe para evitar.
-	lanzarCapturaGeo := func(forceOn, perdido bool) {
+	// `webcam` viaja por el mismo camino y por la misma razón que `forceOn`: lo lee
+	// `capturarWebcamDelCiclo` desde la goroutine de abajo, así que escribirlo desde
+	// el `select` sería una carrera de datos. Escrito acá —con la guardia recién
+	// tomada— la relación de orden la establece el `Store(false)` diferido.
+	//
+	// Que se escriba en CADA turno es lo que hace que apagar el interruptor surta
+	// efecto en caliente. Antes se fijaba una sola vez al arrancar el servicio: el
+	// operador que lo apagaba durante un caso abierto seguía recibiendo fotos hasta
+	// que el equipo se reiniciara, que es exactamente al revés de como tiene que
+	// fallar una perilla que existe para poder dejar de fotografiar a alguien.
+	lanzarCapturaGeo := func(forceOn, perdido, webcam bool) {
 		if geoRunning.CompareAndSwap(false, true) {
 			a.GeoForceOn = forceOn
+			a.LostModeWebcam = webcam
 			go func() {
 				defer geoRunning.Store(false)
 				if perdido {
@@ -254,6 +268,13 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// perdido se apaga por el push. La del arranque sirve de punto de partida y
 	// cada tick la refresca con lo que diga el servidor.
 	geoConfSeg := conf.Geo
+
+	// Último valor conocido del interruptor global de webcam. Hace falta guardarlo
+	// porque el aviso por NATS dispara un ciclo sin traer configuración: sin esta
+	// variable, el ciclo que arranca justo cuando alguien marca el equipo saldría
+	// con el interruptor en el cero del struct y perdería la única foto que se toma
+	// al entrar al modo perdido — la del momento del marcaje, que es la más valiosa.
+	webcamSeg := conf.LostModeWebcam
 
 	for {
 		select {
@@ -295,6 +316,12 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 
 			perdido, perdidoIntervaloMin := a.getLostMode()
 			geoConfSeg = geoConf.Geo
+			if geoConf.fromServer {
+				// Mismo resguardo que el resto: con el repliegue todos los campos son
+				// ceros, y leer ese `false` apagaría la webcam de un caso en curso por
+				// una caída de red en vez de por una decisión de alguien.
+				webcamSeg = geoConf.LostModeWebcam
+			}
 
 			// Si el intervalo vigente cambió, se re-arma. Cubre el caso del arranque
 			// sin red, que dejaba puesto el intervalo del repliegue en vez del real,
@@ -333,7 +360,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// Se escribe desde ESTA goroutine y sólo cuando se acaba de tomar la
 			// guardia; el `Store(false)` diferido establece la relación de orden con
 			// el tick siguiente, así que no hay carrera con la captura que lo lee.
-			lanzarCapturaGeo(geoConf.GeoForceOn || perdido, perdido)
+			lanzarCapturaGeo(geoConf.GeoForceOn || perdido, perdido, webcamSeg)
 
 		// Feature 030 · el estado del modo perdido cambió por el push de NATS.
 		//
@@ -361,7 +388,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// El force-on va encendido por la misma razón que en el tick: en Windows
 			// 11 24H2 el escaneo de BSSIDs exige la ubicación del sistema activada.
 			if perdido {
-				lanzarCapturaGeo(true, true)
+				lanzarCapturaGeo(true, true, webcamSeg)
 			}
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
@@ -464,28 +491,24 @@ func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
 		a.Logger.Debugln("GetAgentCheckInConfig()", err)
 		ret = checkInConfFallback()
 	} else {
-		ret.Hello = r.Result().(*AgentCheckInConfig).Hello
-		ret.AgentInfo = r.Result().(*AgentCheckInConfig).AgentInfo
-		ret.WinSvc = r.Result().(*AgentCheckInConfig).WinSvc
-		ret.PubIP = r.Result().(*AgentCheckInConfig).PubIP
-		ret.Disks = r.Result().(*AgentCheckInConfig).Disks
-		ret.SW = r.Result().(*AgentCheckInConfig).SW
-		ret.WMI = r.Result().(*AgentCheckInConfig).WMI
-		ret.SyncMesh = r.Result().(*AgentCheckInConfig).SyncMesh
-		ret.LimitData = r.Result().(*AgentCheckInConfig).LimitData
-		ret.InstallNushell = r.Result().(*AgentCheckInConfig).InstallNushell
-		ret.InstallNushellVersion = r.Result().(*AgentCheckInConfig).InstallNushellVersion
-		ret.InstallNushellUrl = r.Result().(*AgentCheckInConfig).InstallNushellUrl
-		ret.NushellEnableConfig = r.Result().(*AgentCheckInConfig).NushellEnableConfig
-		ret.InstallDeno = r.Result().(*AgentCheckInConfig).InstallDeno
-		ret.InstallDenoVersion = r.Result().(*AgentCheckInConfig).InstallDenoVersion
-		ret.InstallDenoUrl = r.Result().(*AgentCheckInConfig).InstallDenoUrl
-		ret.DenoDefaultPermissions = r.Result().(*AgentCheckInConfig).DenoDefaultPermissions
-		ret.GeoEnabled = r.Result().(*AgentCheckInConfig).GeoEnabled
-		ret.Geo = r.Result().(*AgentCheckInConfig).Geo
-		ret.GeoForceOn = r.Result().(*AgentCheckInConfig).GeoForceOn
-		ret.LostMode = r.Result().(*AgentCheckInConfig).LostMode
-		ret.LostModeIntervalMin = r.Result().(*AgentCheckInConfig).LostModeIntervalMin
+		// Se copia la estructura ENTERA y no campo por campo.
+		//
+		// Antes había una lista de 22 asignaciones a mano, y el 2026-08-13 se midió
+		// lo que esa lista cuesta: `lost_mode_webcam` viajaba correctamente desde el
+		// servidor —se verificó en staging— pero nadie lo había agregado a la lista,
+		// así que el agente lo descartaba al copiar y el campo valía `false` para
+		// siempre. La foto de webcam de la Fase 2 era un no-op de punta a punta en
+		// las tres plataformas: el interruptor se encendía en la consola y el agente
+		// no se enteraba nunca.
+		//
+		// Es un fallo silencioso por construcción: agregar un campo al struct y
+		// olvidarlo acá no rompe la compilación, no rompe ninguna prueba y no
+		// aparece en ningún log — el valor simplemente llega en el JSON y se tira.
+		// Copiar la estructura completa elimina la clase entera de error en vez de
+		// arreglar el caso de hoy. `fromServer` se fija después a propósito: es
+		// privado, no viene del JSON, y marca justamente que estos datos son del
+		// servidor y no del repliegue.
+		ret = *r.Result().(*AgentCheckInConfig)
 		ret.fromServer = true
 	}
 	return ret

@@ -7,6 +7,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -146,4 +147,25 @@ func (a *Agent) CaptureWebcam() WebcamShot {
 	}
 
 	return shot
+}
+
+// destinoFotoWebcam decide dónde se escribe la foto mientras espera la subida.
+//
+// Existe como función con nombre —en vez de una línea dentro de `capturarWebcam`—
+// porque acá vivió un bug que ninguna prueba podía ver: era una decisión sin
+// nombre, enterrada en medio de la captura, y para ejercitarla hacía falta una
+// cámara. Separada, se prueba en cualquier máquina.
+//
+// Va a `os.TempDir()` y NO a `a.ProgramDir`, igual que la implementación de macOS.
+// En Windows `ProgramDir` es el directorio de instalación real, pero en Linux y
+// macOS `ResolveProgramDir()` lo arma con `os.Getenv("ProgramFiles")`, una variable
+// que sólo existe en Windows: fuera de ahí queda la ruta RELATIVA `ObserverAgent`.
+// El servicio corre con el directorio de trabajo en `/`, así que la foto se
+// intentaba escribir en `/ObserverAgent/`, que no existe en ninguna instalación.
+//
+// Medido en terreno el 2026-08-13: `fswebcam` dice `fopen: No such file or
+// directory` y **sale con código 0 igual**. Lo único que evitó que el agente diera
+// la captura por buena fue la comprobación de tamaño de `capturarWebcam`.
+func destinoFotoWebcam(nombre string) string {
+	return filepath.Join(os.TempDir(), filepath.Base(nombre))
 }

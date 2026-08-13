@@ -25,8 +25,9 @@ import (
 //   - funciona en Wayland, que sólo afecta a la captura de pantalla;
 //   - no hace falta que el usuario esté en el grupo `video`.
 //
-// El archivo cae en el directorio del propio agente y no en el del usuario,
-// justamente porque lo escribe root: es más cerrado, no menos.
+// El archivo NO cae en el directorio del usuario, justamente porque lo escribe
+// root. Dónde cae exactamente es una decisión con su propia historia: ver
+// `destinoFotoWebcam` en webcam.go.
 
 // nodosVideo son las rutas donde puede vivir una cámara. Se prueban en orden.
 //
@@ -88,7 +89,7 @@ func (a *Agent) capturarWebcam(nombre string) WebcamShot {
 		return WebcamShot{Reason: webcamNoTool}
 	}
 
-	destino := filepath.Join(a.ProgramDir, nombre)
+	destino := destinoFotoWebcam(nombre)
 
 	// El último motivo que se vio, para no degradar a `fallo_captura` cuando
 	// alguno de los nodos dijo algo más preciso ("la cámara está ocupada").

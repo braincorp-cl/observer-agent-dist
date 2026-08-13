@@ -1,6 +1,14 @@
 package agent
 
-import "testing"
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"github.com/go-resty/resty/v2"
+)
 
 // TestGeoTickIntervalPiso congela el piso de la captura de ubicación. Es un límite
 // de privacidad, no de rendimiento: sin él, un `checkin_geo` bajo —puesto a mano o
@@ -71,6 +79,80 @@ func TestRepliegueApagaLaGeoPeroNoLaEntierra(t *testing.T) {
 		if c.valor <= 0 {
 			t.Errorf("el repliegue dejó %s en %d: un intervalo no positivo deja ese "+
 				"check-in sin cadencia definida", c.nombre, c.valor)
+		}
+	}
+}
+
+// TestGetCheckInConfFromAPICopiaTodosLosCampos es el test que habría atrapado el
+// bug medido en terreno el 2026-08-13.
+//
+// `GetCheckInConfFromAPI` copiaba la respuesta del servidor campo por campo, con
+// una lista de 22 asignaciones a mano. `lost_mode_webcam` —el interruptor global
+// de la foto de webcam— viajaba correctamente desde el servidor, se verificó
+// contra staging, pero nadie lo había agregado a esa lista. El agente lo
+// descartaba al copiar y el campo valía `false` para siempre: la foto de webcam
+// de la Fase 2 era un no-op de punta a punta, en las tres plataformas y con
+// cualquier configuración. Encender el interruptor en la consola no hacía nada y
+// no había forma de notarlo desde afuera.
+//
+// Lo que hace peligrosa a esa clase de error es que es SILENCIOSA por
+// construcción: agregar un campo al struct y olvidarlo en la copia compila, pasa
+// todas las pruebas y no deja ni una línea de log. El dato llega en el JSON y se
+// tira.
+//
+// Por eso este test no comprueba `LostModeWebcam`: comprueba, por reflexión, que
+// NINGÚN campo exportado se quede en su valor cero cuando el servidor los mandó
+// todos con valor. Un campo nuevo queda protegido el día que se agrega al struct,
+// sin que nadie tenga que acordarse de venir a escribir su caso acá.
+func TestGetCheckInConfFromAPICopiaTodosLosCampos(t *testing.T) {
+	tipo := reflect.TypeOf(AgentCheckInConfig{})
+
+	// El JSON se arma desde las etiquetas del propio struct, para que un campo
+	// nuevo entre solo. Los valores son arbitrarios; lo único que importa es que
+	// ninguno sea el valor cero de su tipo.
+	cuerpo := map[string]any{}
+	for i := 0; i < tipo.NumField(); i++ {
+		campo := tipo.Field(i)
+		etiqueta := campo.Tag.Get("json")
+		if etiqueta == "" || etiqueta == "-" {
+			// `fromServer` no viaja por la red: lo pone la propia función.
+			continue
+		}
+		switch campo.Type.Kind() {
+		case reflect.Bool:
+			cuerpo[etiqueta] = true
+		case reflect.Int:
+			cuerpo[etiqueta] = 7
+		case reflect.String:
+			cuerpo[etiqueta] = "algo"
+		default:
+			t.Fatalf("campo %s de tipo %s no contemplado en este test", campo.Name, campo.Type)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cuerpo)
+	}))
+	defer srv.Close()
+
+	a := &Agent{Logger: loggerMudo(), AgentID: "abc123", rClient: resty.New().SetBaseURL(srv.URL)}
+
+	conf := a.GetCheckInConfFromAPI()
+
+	if !conf.fromServer {
+		t.Fatal("fromServer quedó en false con el servidor respondiendo: el repliegue apagaría el modo perdido de un caso en curso")
+	}
+
+	valor := reflect.ValueOf(conf)
+	for i := 0; i < tipo.NumField(); i++ {
+		campo := tipo.Field(i)
+		if campo.Tag.Get("json") == "" || campo.Tag.Get("json") == "-" {
+			continue
+		}
+		if valor.Field(i).IsZero() {
+			t.Errorf("el campo %s (json:%q) llegó del servidor con valor y la copia lo descartó",
+				campo.Name, campo.Tag.Get("json"))
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +107,42 @@ func TestCuadrosDeCalentamientoNoEsCero(t *testing.T) {
 	// alguien la pone en 0 "para que sea más rápido", vuelve el ok falso.
 	if cuadrosDeCalentamiento < 5 {
 		t.Errorf("cuadrosDeCalentamiento = %d: por debajo de ~5 vuelve la foto negra del primer cuadro", cuadrosDeCalentamiento)
+	}
+}
+
+// TestDestinoDeLaFotoEsRutaAbsoluta congela el arreglo del bug medido en terreno
+// el 2026-08-13.
+//
+// La foto de Linux se escribía en `filepath.Join(a.ProgramDir, nombre)`, y en Linux
+// `ProgramDir` no es lo que su nombre sugiere: `ResolveProgramDir()` lo arma con
+// `os.Getenv("ProgramFiles")`, una variable que sólo existe en Windows. Fuera de
+// Windows queda la ruta RELATIVA `ObserverAgent`, y como el servicio corre con el
+// directorio de trabajo en `/`, la foto se intentaba escribir en `/ObserverAgent/`.
+//
+// El resultado era `fallo_captura` en TODOS los ciclos con la cámara funcionando
+// perfectamente: se comprobó a mano que el mismo comando, con destino absoluto,
+// capturaba la imagen sin problema.
+//
+// El test comprueba la propiedad y no la implementación —el destino tiene que ser
+// ABSOLUTO— y no necesita cámara, que es justamente lo que le faltaba a la prueba
+// original de esta tarea para poder ver el bug.
+func TestDestinoDeLaFotoEsRutaAbsoluta(t *testing.T) {
+	destino := destinoFotoWebcam(webcamFilename(time.Now()))
+
+	if !filepath.IsAbs(destino) {
+		t.Errorf("el destino de la foto es %q, una ruta relativa: el servicio corre con el cwd en / y ahí no existe ese directorio", destino)
+	}
+}
+
+// TestDestinoDeLaFotoNoDependeDeProgramDir es el control del test de arriba.
+//
+// Sin esto, cambiar el destino a `ProgramDir` volvería a pasar la prueba anterior
+// en cualquier máquina de desarrollo —donde `ProgramFiles` puede estar definida, o
+// el cwd ser absoluto— y el bug volvería sin que nadie lo note.
+func TestDestinoDeLaFotoNoDependeDeProgramDir(t *testing.T) {
+	t.Setenv("ProgramFiles", "")
+
+	if destino := destinoFotoWebcam("webcam-x.jpg"); !filepath.IsAbs(destino) {
+		t.Errorf("con ProgramFiles vacía —el estado real de todo Linux— el destino quedó en %q", destino)
 	}
 }

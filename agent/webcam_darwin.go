@@ -6,7 +6,6 @@ package agent
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -77,7 +76,7 @@ func (a *Agent) capturarWebcam(nombre string) WebcamShot {
 	// El directorio del usuario, no el del agente: el proceso corre con la
 	// sesión de consola y `/opt/observeragent` es de root. Mismo criterio que la
 	// captura de pantalla.
-	destino := filepath.Join(os.TempDir(), filepath.Base(nombre))
+	destino := destinoFotoWebcam(nombre)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
