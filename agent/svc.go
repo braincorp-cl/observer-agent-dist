@@ -89,6 +89,16 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// puede no llegar nunca.
 	a.ResumeLostMode()
 
+	// Feature 030 · Fase 2 · T016b/T016c. Va acá, en el arranque del servicio,
+	// porque los dos momentos en que hay que pedir permisos de macOS terminan
+	// pasando por un arranque: la instalación (que deja una marca) y el
+	// auto-update (que reinicia el servicio con un binario nuevo, y el binario
+	// nuevo es justo lo que rompe las filas de TCC).
+	//
+	// No pide nada en los otros sistemas ni en un Mac sin nadie en consola, y
+	// nunca durante un ciclo de modo perdido activo: ver RondaPermisosTCC.
+	a.LanzarRondaPermisosTCC()
+
 	// Sync temprano del mesh node id justo tras instalar, para que el server
 	// conozca la conectividad Mesh sin esperar al primer tick (backport v2.11.0
 	// "get meshid after install"). Solo unix; en Windows el install de Mesh es

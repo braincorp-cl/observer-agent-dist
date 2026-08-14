@@ -108,19 +108,11 @@ func (a *Agent) permisoDeCapturaConcedido() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// El script imprime "1" o "0". `use framework "CoreGraphics"` expone la
-	// función a AppleScript sin necesitar cgo ni un helper compilado aparte —
-	// importa porque el binario de macOS se cross-compila desde Linux con
-	// CGO_ENABLED=0 en parte de la matriz de release.
-	const script = `use framework "CoreGraphics"
-use scripting additions
-if (current application's CGPreflightScreenCaptureAccess()) then
-	return "1"
-else
-	return "0"
-end if`
+	// El texto del script vive en `capture.go`, sin etiqueta de plataforma, para
+	// que la CI —que corre en Linux— pueda vigilarlo: ver `scriptPreflightPantalla`
+	// y el terreno del 2026-08-13.
 
-	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", script)
+	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", scriptPreflightPantalla)
 	if err != nil {
 		a.Logger.Debugln("permisoDeCapturaConcedido: sin sesión de usuario para consultar TCC:", err)
 		return true

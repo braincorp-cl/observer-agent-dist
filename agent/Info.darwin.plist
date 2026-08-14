@@ -22,6 +22,15 @@
   <string>6.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <!--
+    Feature 030 · Fase 2 · T016b. macOS EXIGE esta clave para poder pedir la
+    cámara: sin ella el sistema no muestra el diálogo, mata el proceso que lo
+    pidió y no queda rastro útil. El texto es el que lee la persona en el
+    diálogo, así que dice para qué es de verdad — la evidencia de un equipo
+    perdido o robado, gobernada por el ADR-025 — y no una fórmula genérica.
+  -->
+  <key>NSCameraUsageDescription</key>
+  <string>Observer RMM toma una foto con la cámara solo si el equipo se declara perdido o robado, para identificar a quien lo tenga.</string>
   <key>NSLocationUsageDescription</key>
   <string>Observer RMM registra la ubicación de este equipo corporativo para el inventario de activos.</string>
   <key>NSLocationWhenInUseUsageDescription</key>

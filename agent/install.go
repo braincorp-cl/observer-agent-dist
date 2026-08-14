@@ -406,6 +406,19 @@ func (a *Agent) Install(i *Installer) {
 `, macPlistName, nixAgentBin, nixAgentDir)
 
 		os.WriteFile(macPlistPath, []byte(svc), 0644)
+
+		// Feature 030 · T016b: la marca hace que el servicio pida los permisos
+		// de Cámara y Grabación de pantalla en su primer arranque, que es
+		// AHORA — con la persona que está instalando todavía frente al equipo.
+		//
+		// Se deja una marca en vez de pedirlos acá mismo porque el instalador
+		// corre desde Terminal.app y macOS le atribuye el permiso al
+		// `responsible process`: la fila nacería a nombre del terminal (que
+		// además suele tener cámara concedida, con lo que ni siquiera saldría
+		// un diálogo) y el agente se quedaría sin nada. El permiso tiene que
+		// pedirlo el servicio para que quede a nombre del servicio.
+		a.marcarPedidoDePermisosTCC()
+
 		opts := a.NewCMDOpts()
 		opts.Command = fmt.Sprintf("launchctl bootstrap system %s", macPlistPath)
 		a.CmdV2(opts)
