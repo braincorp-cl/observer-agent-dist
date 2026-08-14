@@ -22,11 +22,14 @@ import (
 // junto con el porqué de todo esto. Acá está el cómo.
 
 const (
-	// tccIdentificadorAgente es lo que se le pasa a `tccutil` para acotar el
-	// reset a NUESTRO cliente. Debe coincidir con el CFBundleIdentifier de
-	// agent/Info.darwin.plist y con el `--identifier` del `codesign` del
-	// release.yml; si alguno de los tres se mueve sin los otros, el reset deja
-	// de encontrar la fila (y falla de forma inocua, que es el lado correcto).
+	// tccIdentificadorAgente es la identidad con la que se firma el binario.
+	// Debe coincidir con el CFBundleIdentifier de agent/Info.darwin.plist y con
+	// el `--identifier` del `codesign` de release.yml.
+	//
+	// 🪤 No sirve para hablarle a `tccutil`: está medido que rechaza este
+	// cliente en todas sus formas porque el agente no es un bundle (ver la nota
+	// de "NO HAY PASO 3" más abajo). Se conserva porque es la identidad de
+	// firma, que es lo que pasa a importar con Developer ID (ADR-018).
 	tccIdentificadorAgente = "cl.observer.agent"
 
 	// tccPlazoDialogo es lo que se espera a que la persona conteste. Un
@@ -212,30 +215,31 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 		return reg
 	}
 
-	// Paso 3 — el reset acotado. Acá estamos en el caso de T016c: la fila
-	// quedó como denegación (o como permiso rancio anclado a un cdhash viejo),
-	// y con una fila así el sistema YA NO PREGUNTA. Borrarla devuelve el
-	// servicio a "no determinado", que es el único estado en que existe el
-	// diálogo.
+	// NO HAY PASO 3. Lo hubo: un `tccutil reset` acotado a este cliente, para
+	// devolver la fila a "no determinado" —el único estado en que el sistema
+	// vuelve a preguntar—. Se midió el 2026-08-14 en el Mac de terreno y NO
+	// EXISTE esa vía:
 	//
-	// 🟡 NO MEDIDO que `tccutil` acepte a este cliente: el agente es un
-	// ejecutable suelto, no un bundle, y TCC lo indexa por ruta. Por eso se
-	// prueba con el identificador y con la ruta, y se VERIFICA leyendo el
-	// estado después — si no cambió nada, no cambió nada.
+	//   tccutil reset ScreenCapture cl.observer.agent                 -> rc=64
+	//   tccutil reset ScreenCapture /opt/observeragent/observeragent  -> rc=64
+	//   "No such bundle identifier ... (OSStatus error -10814)"
 	//
-	// 🚫 Nunca un reset global: `tccutil reset ScreenCapture` a secas barrería
-	// también el navegador, las apps de videollamada, el escritorio remoto y el
-	// meshagent de este mismo producto.
-	if !reg.UsoReset {
-		reg.UsoReset = true
-		if a.resetPermisoTCC(servicio) {
-			if a.pedirPermisoTCC(servicio, false) || a.pedirPermisoTCC(servicio, true) {
-				reg.Concedido = true
-				reg.UltimoPaso = "reset_y_dialogo"
-				return reg
-			}
-		}
-	}
+	// Los cuatro casos (las dos formas del cliente × root y usuario de consola)
+	// fallan igual: `tccutil` sólo resuelve BUNDLE IDENTIFIERS, y este agente es
+	// un ejecutable suelto. No es que la ruta esté mal escrita, es que no hay
+	// forma de nombrarlo. Mientras el agente no se distribuya como .app, el paso
+	// no puede funcionar en ningún equipo.
+	//
+	// Se borra en vez de arreglarse porque su verificación tenía además un OK
+	// FALSO: confirmaba el reset comprobando que el estado quedara en "no
+	// determinado", sin comparar contra el estado PREVIO, así que un servicio que
+	// ya estaba en "no determinado" —el caso de Grabación de pantalla en el
+	// terreno del 2026-08-14— daba el reset por bueno, declaraba éxito en el log
+	// y de paso se comía el segundo intento con la otra forma del cliente.
+	//
+	// Lo que resuelve de verdad esta fila rota es reinstalar el agente o firmarlo
+	// con Developer ID (ADR-018), y eso es lo que dice el aviso del paso
+	// siguiente.
 
 	a.Logger.Infoln("escalarPermisoTCC:", servicio, "sigue sin concederse tras agotar los intentos")
 	reg.UltimoPaso = "sin_dialogo_posible"
@@ -335,40 +339,6 @@ func (a *Agent) pedirPermisoTCC(servicio string, viaSesionUsuario bool) bool {
 		return false
 	}
 	return estado == tccEstadoConcedido
-}
-
-// resetPermisoTCC borra la fila de ESTE cliente y confirma que quedó borrada.
-func (a *Agent) resetPermisoTCC(servicio string) bool {
-	self, _ := os.Executable()
-
-	clientes := []string{tccIdentificadorAgente}
-	if self != "" {
-		clientes = append(clientes, self)
-	}
-
-	for _, cliente := range clientes {
-		if cliente == "" {
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), tccPlazoConsulta)
-		salida, err := exec.CommandContext(ctx, "/usr/bin/tccutil", "reset", servicio, cliente).CombinedOutput()
-		cancel()
-
-		a.Logger.Debugln("resetPermisoTCC:", servicio, cliente, "err:", err,
-			"salida:", strings.TrimSpace(string(salida)))
-
-		// El `exit 0` de tccutil no prueba que haya borrado nada: sale 0
-		// aunque el cliente no exista. Lo que prueba el efecto es que el
-		// servicio vuelva a "no determinado".
-		if estado, e := a.estadoPermisoTCC(servicio); e == nil && estado == tccEstadoNoDeterminado {
-			a.Logger.Infoln("resetPermisoTCC:", servicio, "vuelto a 'no determinado' con", cliente)
-			return true
-		}
-	}
-
-	a.Logger.Infoln("resetPermisoTCC:", servicio, "no se pudo devolver a 'no determinado'")
-	return false
 }
 
 // avisarPermisosTCC le dice a la persona lo que el sistema ya no le va a

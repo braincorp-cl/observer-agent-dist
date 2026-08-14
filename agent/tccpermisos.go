@@ -119,7 +119,6 @@ type intentoTCC struct {
 	Rondas     int       `json:"rondas"`
 	Ultima     time.Time `json:"ultima"`
 	Concedido  bool      `json:"concedido"`
-	UsoReset   bool      `json:"uso_reset"`
 	Aviso      bool      `json:"aviso_mostrado"`
 	UltimoPaso string    `json:"ultimo_paso"`
 }

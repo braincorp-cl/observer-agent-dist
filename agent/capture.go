@@ -290,8 +290,10 @@ end if`
 //
 // Y sólo aparece diálogo cuando el permiso está "no determinado": si la fila de
 // TCC quedó como denegación —lo que hace cada auto-update, ver tccpermisos.go—
-// esta llamada devuelve `false` de inmediato y sin mostrar nada. Por eso el
-// paso previo de la escalada es el `tccutil reset` acotado.
+// esta llamada devuelve `false` de inmediato y sin mostrar nada. Y no hay forma
+// de devolver esa fila a "no determinado" desde el agente: está medido que
+// `tccutil` no acepta a este cliente (ver tccpermisos_darwin.go). Cuando pasa,
+// la escalada termina avisándole a la persona.
 const scriptPedirPantalla = `use framework "CoreGraphics"
 use scripting additions
 if (current application's CGRequestScreenCaptureAccess()) then

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestAlinearEstadoTCCOlvidaAlCambiarElBinario(t *testing.T) {
 	previo := estadoTCC{
 		Identidad: "2.15.18|100|1",
 		Servicios: map[string]intentoTCC{
-			tccServicioCamara: {Concedido: true, Rondas: 1, Aviso: true, UsoReset: true},
+			tccServicioCamara: {Concedido: true, Rondas: 1, Aviso: true},
 		},
 	}
 
@@ -172,5 +173,43 @@ func TestScriptPedirPantallaPideDeVerdadYNoDeclaraVariables(t *testing.T) {
 	if strings.Contains(scriptPreflightPantalla, "CGRequestScreenCaptureAccess") {
 		t.Error("el PREFLIGHT no puede pedir: abriría un diálogo en un equipo robado. " +
 			"Debe usar CGPreflightScreenCaptureAccess")
+	}
+}
+
+// TestNoSeIntentaTccutilPorqueElAgenteNoEsUnBundle fija un hallazgo de terreno
+// que es caro de re-descubrir y muy fácil de re-introducir, porque `tccutil
+// reset` es LA respuesta obvia cuando uno lee que la fila de TCC quedó como
+// denegación.
+//
+// Medido el 2026-08-14 en el Mac de terreno, las dos formas del cliente y los
+// dos usuarios:
+//
+//	tccutil reset ScreenCapture cl.observer.agent                 -> rc=64
+//	tccutil reset ScreenCapture /opt/observeragent/observeragent  -> rc=64
+//	(como root y como el usuario de consola, mismo resultado)
+//	"No such bundle identifier ... (OSStatus error -10814)"
+//
+// `tccutil` sólo resuelve bundle identifiers y este agente es un ejecutable
+// suelto: no hay forma de nombrarlo. El intento anterior además declaraba éxito
+// cuando el servicio YA estaba en "no determinado", que es el ok falso que
+// motivó borrarlo.
+//
+// Si algún día el agente se distribuye como .app (ADR-018), este test es el
+// lugar donde consta por qué se sacó y qué habría que volver a medir.
+func TestNoSeIntentaTccutilPorqueElAgenteNoEsUnBundle(t *testing.T) {
+	fuente, err := os.ReadFile("tccpermisos_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer la fuente de la ronda: %v", err)
+	}
+
+	for _, linea := range strings.Split(string(fuente), "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "//") {
+			continue // las menciones en comentarios son justamente el registro
+		}
+		if strings.Contains(codigo, "tccutil") {
+			t.Errorf("la ronda vuelve a invocar tccutil, que está medido que "+
+				"rechaza a este cliente (rc=64): %q", codigo)
+		}
 	}
 }
