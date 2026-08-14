@@ -99,6 +99,13 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// nunca durante un ciclo de modo perdido activo: ver RondaPermisosTCC.
 	a.LanzarRondaPermisosTCC()
 
+	// Feature 030 · Fase 3 · T021. El gemelo de la ronda de arriba, para Linux.
+	// Va en el mismo lugar por el mismo motivo —instalación y arranque tras un
+	// update son los dos momentos con alguien delante del equipo—, y con las
+	// mismas guardias: nada si el escritorio ya tiene captura silenciosa, nada
+	// sin sesión gráfica, nada durante un ciclo de modo perdido activo.
+	a.LanzarRondaPortalWayland()
+
 	// Sync temprano del mesh node id justo tras instalar, para que el server
 	// conozca la conectividad Mesh sin esperar al primer tick (backport v2.11.0
 	// "get meshid after install"). Solo unix; en Windows el install de Mesh es

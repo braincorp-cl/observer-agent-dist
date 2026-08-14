@@ -22,14 +22,15 @@ import (
 //
 // DOS DECISIONES QUE SE VEN EN EL TERRENO:
 //
-//  1. **Wayland no se soporta y se dice.** `scrot`/`import` hablan X11 puro; en
+//  1. **Wayland tiene su propio archivo.** `scrot`/`import` hablan X11 puro; en
 //     una sesión Wayland conectan y devuelven NEGRO —medido el 2026-08-02 en un
 //     Fedora 44 KDE, con una captura reducida a 4×4 en gris que dio 16 ceros—.
-//     El camino que sí existe es el portal `xdg-desktop-portal` (ScreenCast),
-//     pero el portal MUESTRA UN SELECTOR al usuario: la captura deja de ser
-//     silenciosa y en un equipo robado eso avisa al ladrón. Queda diferido a la
-//     Fase 3 (T021), y hasta entonces el ciclo reporta `wayland_no_soportado`,
-//     que es un dato accionable, en vez de una imagen negra que parece evidencia.
+//     Por eso la rama Wayland no comparte NADA con la de abajo: se va entera a
+//     `capture_linux_wayland.go` (T021), que prueba las vías nativas de cada
+//     compositor y, sólo si alguien lo autorizó antes, el portal. Cuando no hay
+//     ninguna, se sigue reportando un motivo honesto —`wayland_no_soportado` o
+//     `wayland_sin_autorizacion`— en vez de una imagen negra que parece
+//     evidencia.
 //
 //  2. **El archivo cae en el directorio del usuario, no en el del agente.** La
 //     herramienta corre con el uid del usuario y `/opt/observeragent` es de root
@@ -71,11 +72,12 @@ func (a *Agent) capturarPantalla(nombre string) ScreenShot {
 	}
 
 	if sesionEsWayland(sess.Env) {
-		// Se registra en INFO y no en DEBUG: es la diferencia entre "esta flota no
-		// da capturas" y "esta captura falló", y quien opera el caso tiene que
-		// poder verla sin subir el nivel de log de un equipo que ya no tiene.
-		a.Logger.Infoln("capturarPantalla: la sesión es Wayland, no hay captura silenciosa posible")
-		return ScreenShot{Reason: captureWayland}
+		// T021 (Fase 3): Wayland dejó de ser un callejón sin salida. La escalera
+		// de vías —y por qué el portal no se usa durante un caso activo— está en
+		// capture_linux_wayland.go. Las herramientas de abajo no se prueban acá:
+		// `scrot` y compañía hablan X11 puro y en Wayland conectan y devuelven
+		// NEGRO (medido el 2026-08-02 en un Fedora 44 KDE).
+		return a.capturarPantallaWayland(sess, nombre)
 	}
 
 	bin, args, ok := elegirHerramientaCaptura()

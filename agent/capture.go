@@ -38,8 +38,14 @@ const (
 	// inicio de sesión o nadie entró desde que arrancó. No es un fallo — es un
 	// dato del caso, y además dice que el ladrón todavía no abrió sesión.
 	captureNoSession = "sin_sesion"
-	// Sesión Wayland: no hay captura silenciosa posible (ver capture_linux.go).
+	// Sesión Wayland en la que NO EXISTE ninguna vía de captura: ni la nativa
+	// del compositor ni el portal (falta `gdbus`). Ver capture_linux_wayland.go.
 	captureWayland = "wayland_no_soportado"
+	// Sesión Wayland en la que la captura SÍ es posible pero falta el
+	// enrolamiento: el compositor no ofrece vía silenciosa y el portal nunca fue
+	// autorizado. Es distinto del anterior porque es REPARABLE, y quien opera el
+	// caso necesita saber que a ese equipo le falta un paso, no que no puede.
+	captureWaylandSinAutorizacion = "wayland_sin_autorizacion"
 	// No hay ninguna herramienta de captura instalada (Linux).
 	captureNoTool = "sin_herramienta"
 	// El SO negó el permiso — macOS sin "Grabación de pantalla" concedida.
