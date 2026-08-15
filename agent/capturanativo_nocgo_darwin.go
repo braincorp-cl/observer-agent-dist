@@ -15,3 +15,14 @@ import "time"
 func capturarWebcamNativo(destino string, descarte int, plazo time.Duration) (string, string) {
 	return webcamUnsupported, "binario compilado sin cgo"
 }
+
+func estadoTCCNativo(servicio string) int { return tccEstadoNoDeterminado }
+
+func pedirPermisoTCCNativo(servicio string, plazo time.Duration) int {
+	return tccEstadoNoDeterminado
+}
+
+// Sin cgo se deja que la captura lo intente y que la verificación de imagen en
+// negro haga de red. Mismo criterio que el camino con cgo ante un fallo de
+// consulta.
+func pantallaPreflightNativo() bool { return true }

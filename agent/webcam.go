@@ -79,15 +79,6 @@ const (
 	webcamFailed = "fallo_captura"
 	// Plataforma sin implementación de cámara.
 	webcamUnsupported = "so_no_soportado"
-	// Nadie tiene la sesión gráfica abierta. SÓLO macOS lo usa, por el contexto
-	// Aqua (ver la decisión 1 del encabezado). Es el MISMO código que ya usa la
-	// captura de pantalla, y comparte su traducción en la consola: es la misma
-	// situación descrita desde el mismo equipo, y darle un código propio
-	// obligaría a explicar dos veces lo mismo a quien sigue el caso.
-	//
-	// Es distinto de `permiso_denegado` y la diferencia es accionable: al equipo
-	// sin sesión no le falta un permiso, le falta que alguien entre.
-	webcamNoSession = "sin_sesion"
 )
 
 // cuadrosDeCalentamiento es cuántos cuadros se descartan antes de quedarse con
@@ -191,34 +182,16 @@ func destinoFotoWebcam(nombre string) string {
 	return filepath.Join(os.TempDir(), filepath.Base(nombre))
 }
 
-// scriptEstadoTCCCamara consulta el permiso TCC de Cámara en macOS.
+// EL SCRIPT DE APPLESCRIPT DE LA CÁMARA SE FUE EN T016.
 //
-// Vive acá, SIN etiqueta de plataforma, por la misma razón que
-// `destinoFotoWebcam` y que el contrato de captura de `capture.go`: la CI corre
-// `go test` en Linux, así que un texto guardado dentro de `webcam_darwin.go` no
-// lo mira ninguna prueba. Este en particular se pagó caro.
+// Era `scriptEstadoTCCCamara`, un `osascript` cargando AVFoundation. Lo
+// reemplazó `observer_camara_estado` (captura_darwin.m), llamado desde dentro
+// del ayudante — que es quien tiene la identidad que TCC juzga. Preguntado desde
+// el servicio, el estado era correcto sobre el proceso equivocado.
 //
-// 🪤 EL SCRIPT NO DECLARA VARIABLES, Y ESO NO ES ESTILO. La versión anterior
-// decía `set st to (…)`, y **`st` es palabra reservada de AppleScript** —los
-// ordinales `1st`, `2nd`, `3rd`, `4th`—, así que **no compilaba nunca**:
-// `osascript -e 'set st to 1'` responde `-2741` incluso sin `use framework`.
-// Consecuencia medida en terreno el 2026-08-13 (MacBook M2 Pro, macOS 26.5.2):
-// `cmd.Output()` fallaba siempre, `permisoDeCamaraConcedido` devolvía `false`
-// **incondicionalmente** y la cámara no se habría intentado NI CON EL PERMISO
-// CONCEDIDO — publicando además el mismo `permiso_denegado` que una denegación
-// legítima, o sea indistinguible desde la consola. Devolver el valor sin pasar
-// por una variable no arregla ese nombre: elimina la clase entera de bug.
-//
-// Esta es la forma exacta que se midió respondiendo en el equipo real (devolvió
-// `0`, `AVAuthorizationStatusNotDetermined`).
-const scriptEstadoTCCCamara = `use framework "AVFoundation"
-use scripting additions
-return (current application's AVCaptureDevice's authorizationStatusForMediaType:(current application's AVMediaTypeVideo)) as text`
-
-// estadoTCCCamaraConcedido es el único valor de `AVAuthorizationStatus` que
-// habilita la captura: 3 = `Authorized`. 0 sin determinar, 1 restringido,
-// 2 denegado.
-const estadoTCCCamaraConcedido = "3"
+// 🪤 Su lección sobrevive al script y está anotada en capture.go: `st` es palabra
+// reservada de AppleScript y ese script no compiló nunca, devolviendo `false`
+// incondicional e indistinguible de una denegación real.
 
 // negroMedioMax es el brillo MEDIO por canal bajo el cual una foto de webcam se
 // considera sin imagen.

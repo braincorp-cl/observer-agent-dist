@@ -3,134 +3,60 @@
 
 package agent
 
-import (
-	"context"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
-)
-
-// Feature 030 · Fase 1 · captura de pantalla en macOS (T013).
+// Feature 030 · Fase 1 · captura de pantalla en macOS (T013), rehecha en T016.
 //
 // EL MURO, dicho desde el día uno (decisión 2 del jefe, 2026-07-28): en macOS
 // ≥ 10.15 la captura de pantalla exige el permiso TCC "Grabación de pantalla",
 // y ese permiso **ningún MDM lo puede conceder**. El perfil PPPC de Apple sólo
 // sabe NEGAR pantalla, cámara y micrófono; concederlos requiere que una persona
-// lo haga a mano en Ajustes del Sistema, frente al equipo. Lo que se midió en
-// la 025 con CoreLocation vale igual acá.
+// lo haga a mano, frente al equipo.
 //
-// Consecuencia práctica: en una flota Mac administrada, esta captura **no va a
-// funcionar** salvo que alguien la haya autorizado a mano antes del robo. Y el
-// modo en que no funciona es el peligroso — `screencapture` **no falla**:
-// devuelve 0 y escribe un PNG con el fondo de escritorio y sin una sola
-// ventana, o directamente negro. Un caso alimentado con eso parece tener
-// evidencia y no la tiene.
+// Y el modo en que no funciona es el peligroso — `screencapture` **no falla**:
+// devuelve 0 y escribe un PNG con el fondo de escritorio y sin una sola ventana,
+// o directamente negro. Un caso alimentado con eso parece tener evidencia y no
+// la tiene.
 //
 // Por eso acá hay DOS verificaciones y no una:
 //
-//  1. `CGPreflightScreenCaptureAccess` vía el binario del sistema, ANTES de
-//     capturar: si el permiso no está concedido se reporta `permiso_denegado` y
-//     no se captura nada.
+//  1. `CGPreflightScreenCaptureAccess`, ANTES de capturar: si el permiso no está
+//     concedido se reporta `permiso_denegado` y no se captura nada. Vive dentro
+//     del ayudante, que es quien tiene la identidad que TCC juzga.
 //  2. La verificación de imagen en negro que hace `CaptureScreen` para los tres
 //     SO, DESPUÉS: por si la primera dijera que sí y el resultado igual saliera
 //     vacío.
 //
-// 🔴 SIN TERRENO: no se ha probado en un Mac real (ver la nota de la Fase 1 en
-// actions.md). Lo que está escrito acá es el comportamiento documentado de
-// `screencapture` y del subsistema TCC, no una medición.
+// ✅ CON TERRENO desde el 2026-08-13, y no salió como se esperaba: el permiso SÍ
+// se puede conceder, pero concedido a un ejecutable suelto **muere en la
+// siguiente actualización** y deja una fila que no se puede arreglar. Eso es lo
+// que resolvió T016 moviendo la captura a un bundle con identificador propio.
 
-// capturarPantalla toma la captura dentro de la sesión del usuario de consola.
+// capturarPantalla se la encarga al ayudante Aqua.
 //
-// `screencapture` es parte del sistema (/usr/sbin), así que no hay dependencia
-// que instalar. Las banderas:
+// 🔑 EL CAMBIO DE T016, Y NO ES SÓLO DE PLOMERÍA: lo que se movió es el SUJETO
+// del permiso. Antes `screencapture` corría como hijo del servicio vía
+// `launchctl asuser`, así que TCC lo juzgaba como
+// `/opt/observeragent/observeragent` — un ejecutable suelto, cuya fila de
+// `access` se rompe en cada actualización y que **no se puede reparar**, porque
+// `tccutil` no sabe nombrar a algo que no es un `.app` y SIP impide borrar la
+// fila a mano. Medido el 2026-08-15 en el Mac de terreno: la fila decía
+// "permitido" con el csreq de julio, Ajustes mostraba el interruptor encendido y
+// la captura devolvía `could not create image from display`.
 //
-//	-x  sin sonido de obturador. En un equipo robado, el "clic" avisa al ladrón
-//	    que alguien lo está mirando — y esta feature depende de no delatarse.
-//	-C  sin el cursor del mouse dibujado: la evidencia es lo que hay en pantalla.
-//	-t png  formato explícito, para no depender de la preferencia del usuario.
+// Ahora el sujeto es el bundle del ayudante, que tiene identificador propio.
+// Cuesta una concesión —la primera vez hay que autorizarlo a él— y a cambio el
+// permiso pasa a ser reparable para siempre. Ver capturaaqua.go.
 func (a *Agent) capturarPantalla(nombre string) ScreenShot {
-	if !a.permisoDeCapturaConcedido() {
-		a.Logger.Infoln("capturarPantalla: macOS no tiene concedido el permiso de Grabación de pantalla, no se captura")
-		return ScreenShot{Reason: captureDenied}
+	ruta, motivo := a.capturarPorAyudante(capturaTipoPantalla, nombre)
+	if motivo != "" {
+		return ScreenShot{Reason: motivo}
 	}
-
-	// El directorio del usuario, no el del agente: el proceso corre con `sudo -u`
-	// y `/opt/observeragent` es de root. `/tmp` está siempre y es escribible; el
-	// archivo se cierra a 0600 apenas existe (ver CaptureScreen) y se borra en
-	// cuanto se sube.
-	destino := filepath.Join(os.TempDir(), filepath.Base(nombre))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd, err := a.newUserSessionCmd(ctx, "/usr/sbin/screencapture", "-x", "-C", "-t", "png", destino)
-	if err != nil {
-		a.Logger.Debugln("capturarPantalla: no hay sesión de usuario de consola:", err)
-		return ScreenShot{Reason: captureNoSession}
-	}
-
-	salida, err := cmd.CombinedOutput()
-	if err != nil {
-		a.Logger.Debugln("capturarPantalla: screencapture falló:", err, "salida:", strings.TrimSpace(string(salida)))
-		_ = os.Remove(destino)
-		return ScreenShot{Reason: captureFailed}
-	}
-
-	// El `exit 0` no prueba el efecto: sin permiso, `screencapture` sale con 0 y
-	// puede no dejar nada. Lo que prueba la captura es el archivo.
-	info, err := os.Stat(destino)
-	if err != nil || info.Size() == 0 {
-		a.Logger.Debugln("capturarPantalla: screencapture salió con 0 pero no dejó archivo utilizable")
-		_ = os.Remove(destino)
-		return ScreenShot{Reason: captureFailed}
-	}
-
-	return ScreenShot{Path: destino}
-}
-
-// permisoDeCapturaConcedido pregunta a TCC si este agente puede capturar la
-// pantalla, SIN pedirle nada al usuario.
-//
-// La consulta se hace con `osascript` sobre el framework CoreGraphics
-// (`CGPreflightScreenCaptureAccess`) porque es la única API que responde sin
-// efectos secundarios: su hermana `CGRequestScreenCaptureAccess` **abre un
-// diálogo** pidiendo el permiso, y un diálogo en un equipo robado es
-// exactamente lo que no puede pasar. Preflight sólo lee el estado.
-//
-// Ante cualquier problema para consultar se devuelve `true` y se deja que la
-// captura lo intente: el resultado se verifica igual por el lado de la imagen
-// (una captura sin permiso sale negra y `CaptureScreen` la descarta), así que
-// equivocarse hacia el intento cuesta un archivo de más, y equivocarse hacia la
-// negativa costaría TODA la evidencia de un caso real por un fallo de la
-// consulta.
-func (a *Agent) permisoDeCapturaConcedido() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// El texto del script vive en `capture.go`, sin etiqueta de plataforma, para
-	// que la CI —que corre en Linux— pueda vigilarlo: ver `scriptPreflightPantalla`
-	// y el terreno del 2026-08-13.
-
-	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", scriptPreflightPantalla)
-	if err != nil {
-		a.Logger.Debugln("permisoDeCapturaConcedido: sin sesión de usuario para consultar TCC:", err)
-		return true
-	}
-
-	salida, err := cmd.Output()
-	if err != nil {
-		a.Logger.Debugln("permisoDeCapturaConcedido: no se pudo consultar TCC:", err)
-		return true
-	}
-
-	return strings.TrimSpace(string(salida)) != "0"
+	return ScreenShot{Path: ruta}
 }
 
 // motivoDePantallaNegra: en macOS el caso "negra" casi siempre es el permiso
-// TCC, y ese ya se detecta ANTES de capturar (`permisoDeCapturaConcedido`). Lo
-// que quede después es negro sin explicación conocida, así que se reporta como
-// tal en vez de adivinar.
+// TCC, y ese ya se detecta ANTES de capturar (el preflight del ayudante). Lo que
+// quede después es negro sin explicación conocida, así que se reporta como tal
+// en vez de adivinar.
 func (a *Agent) motivoDePantallaNegra() string {
 	return captureBlank
 }

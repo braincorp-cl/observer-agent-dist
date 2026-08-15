@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/spf13/viper"
 	ormm "github.com/braincorp-cl/observer-agent-dist/shared"
+	"github.com/spf13/viper"
 )
 
 func (a *Agent) installerMsg(msg, alert string, silent bool) {
@@ -74,14 +74,14 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 		// usuario ANTES de borrar su plist. Al revés queda un trabajo registrado
 		// apuntando a un archivo que ya no existe, y launchd lo arrastra hasta
 		// que la persona cierre sesión.
-		a.descargarAyudanteCamara()
+		a.descargarAyudanteCaptura()
 
 		os.RemoveAll(defaultMacMeshSvcDir)
 		os.RemoveAll(nixMeshDir)
 		os.Remove(etcConfig)
 		os.RemoveAll(nixAgentDir)
 		os.Remove(macPlistPath)
-		os.Remove(webcamAquaPlist)
+		os.Remove(capturaAquaPlist)
 	}
 }
 

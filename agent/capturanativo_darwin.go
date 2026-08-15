@@ -5,7 +5,7 @@ package agent
 /*
 #cgo LDFLAGS: -framework AVFoundation -framework CoreImage -framework CoreMedia -framework CoreVideo -framework CoreGraphics -framework Foundation
 #include <stdlib.h>
-#include "webcam_darwin.h"
+#include "captura_darwin.h"
 */
 import "C"
 
@@ -61,4 +61,54 @@ func capturarWebcamNativo(destino string, descarte int, plazo time.Duration) (st
 	default:
 		return webcamFailed, texto
 	}
+}
+
+// estadoTCCNativo consulta el permiso SIN efectos secundarios.
+//
+// Corre DENTRO del ayudante, y eso es lo que lo hace válido: el sujeto de TCC es
+// el bundle, así que lo que responde acá es exactamente lo que le va a responder
+// al camino por el que se saca la evidencia. Preguntado desde el servicio, la
+// respuesta sería la del servicio, que ya no es quien captura.
+func estadoTCCNativo(servicio string) int {
+	if servicio == tccServicioPantalla {
+		// La pantalla no tiene escala: `CGPreflightScreenCaptureAccess` es un
+		// booleano. Se mapea a los dos únicos valores que la escalada distingue.
+		if int(C.observer_pantalla_preflight()) == 1 {
+			return tccEstadoConcedido
+		}
+		return tccEstadoNoDeterminado
+	}
+	return int(C.observer_camara_estado())
+}
+
+// pedirPermisoTCCNativo dispara el diálogo del sistema y devuelve el estado
+// resultante.
+//
+// 🚫 Sólo lo llama la ronda de T016b/T016c, que tiene las guardias: nunca con un
+// ciclo de modo perdido activo, nunca sin sesión de consola, y con tope de
+// rondas por binario.
+func pedirPermisoTCCNativo(servicio string, plazo time.Duration) int {
+	if servicio == tccServicioPantalla {
+		if int(C.observer_pantalla_pedir()) == 1 {
+			return tccEstadoConcedido
+		}
+		return tccEstadoNoDeterminado
+	}
+
+	estado, err := tccPedirCamaraNativo(plazo)
+	if err != nil {
+		return tccEstadoNoDeterminado
+	}
+	return estado
+}
+
+// pantallaPreflightNativo es el atajo que usa la captura.
+//
+// Ante un fallo de consulta devuelve `true` y deja que la captura lo intente: el
+// resultado se verifica igual por el lado de la imagen (una captura sin permiso
+// sale negra y `CaptureScreen` la descarta), así que equivocarse hacia el
+// intento cuesta un archivo de más, y equivocarse hacia la negativa costaría
+// TODA la evidencia de un caso real por un fallo de la consulta.
+func pantallaPreflightNativo() bool {
+	return int(C.observer_pantalla_preflight()) == 1
 }

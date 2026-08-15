@@ -140,14 +140,15 @@ func main() {
 		// capturas de su pantalla y su ubicación. Imprime una sola línea
 		// (OK <archivo> <ruta> / FAIL <motivo>), igual que `-m screencapture`.
 		a.RunWebcamCapture(flag.Arg(0))
-	case "webcamaqua":
-		// Feature 030 (macOS): el ayudante que SÍ toca la cámara. Lo despierta
-		// launchd dentro de la sesión Aqua, que es el único contexto donde la
-		// cámara entrega cuadros — desde el servicio, con el permiso concedido,
+	case "capturaaqua":
+		// Feature 030 (macOS): el ayudante que SÍ toca la cámara y la pantalla.
+		// Lo despierta launchd desde dentro de su bundle y en la sesión Aqua, que
+		// son las dos condiciones que le dan identidad ante TCC y contexto
+		// gráfico — desde el servicio, con el permiso concedido, la cámara
 		// devuelve cero cuadros y ningún error. No se invoca a mano: lee el
 		// pedido que dejó el servicio y le contesta por el mismo buzón.
-		// Ver agent/webcamaqua.go.
-		a.RunWebcamAqua()
+		// Ver agent/capturaaqua.go.
+		a.RunCapturaAqua()
 	case "tccpermisos":
 		// Feature 030 (macOS): fuerza una ronda de permisos TCC. Es la vía
 		// manual —desde la biblioteca de scripts o un rawcmd— para cuando hay
@@ -155,12 +156,6 @@ func main() {
 		// auto-update. El servicio la corre solo en su arranque; esto es para
 		// no tener que esperarlo.
 		a.RondaPermisosTCC(true)
-	case "tccpedir":
-		// Feature 030 (macOS): el proceso hijo que DISPARA el diálogo del
-		// sistema. No se invoca a mano —lo lanza la ronda— y sobre todo NO se
-		// invoca por SSH: ahí el sujeto del permiso pasa a ser `sshd` y el
-		// sistema deniega sin preguntar, gastando el estado.
-		a.RunPedirPermisoTCC(flag.Arg(0))
 	case "getpython":
 		a.GetPython(true)
 	case "installdeno":

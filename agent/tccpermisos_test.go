@@ -151,65 +151,47 @@ func TestPanelAjustesTCCApuntaAlPanelExacto(t *testing.T) {
 	}
 }
 
-// TestScriptPedirPantallaPideDeVerdadYNoDeclaraVariables: mismo guardián que el
-// de la cámara (W-030-F2-08). `st`, `nd`, `rd` y `th` son palabras reservadas de
-// AppleScript y un `set` con un nombre así rompe el script entero, dejando el
-// permiso sin pedirse jamás y sin un error que lo delate.
-func TestScriptPedirPantallaPideDeVerdadYNoDeclaraVariables(t *testing.T) {
-	for _, script := range []string{scriptPedirPantalla, scriptPreflightPantalla} {
-		for _, linea := range strings.Split(script, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(linea), "set ") {
-				t.Errorf("el script declara una variable (%q): ver W-030-F2-08", strings.TrimSpace(linea))
-			}
-		}
-		if !strings.Contains(script, "CoreGraphics") {
-			t.Error("el script dejó de cargar CoreGraphics")
-		}
-	}
-
-	if !strings.Contains(scriptPedirPantalla, "CGRequestScreenCaptureAccess") {
-		t.Error("el script de pedido debe llamar a CGRequestScreenCaptureAccess: es el que abre el diálogo")
-	}
-	if strings.Contains(scriptPreflightPantalla, "CGRequestScreenCaptureAccess") {
-		t.Error("el PREFLIGHT no puede pedir: abriría un diálogo en un equipo robado. " +
-			"Debe usar CGPreflightScreenCaptureAccess")
-	}
-}
-
-// TestNoSeIntentaTccutilPorqueElAgenteNoEsUnBundle fija un hallazgo de terreno
-// que es caro de re-descubrir y muy fácil de re-introducir, porque `tccutil
-// reset` es LA respuesta obvia cuando uno lee que la fila de TCC quedó como
-// denegación.
+// TestTccutilSoloSeInvocaContraElBundleDelAyudante fija el hallazgo de terreno
+// que hizo posible el paso 2 de la escalada, y la trampa que lo rodea.
 //
-// Medido el 2026-08-14 en el Mac de terreno, las dos formas del cliente y los
-// dos usuarios:
+// Historia corta, porque el matiz es todo: `tccutil reset` se archivo el
+// 2026-08-14 como imposible, tras fallar con `rc=64 · No such bundle
+// identifier` en sus cuatro formas contra el binario del servicio. El
+// 2026-08-15 se midio que el diagnostico estaba incompleto —
+// `com.apple.screensharing.agent`, un identificador de Apple real, falla
+// EXACTAMENTE IGUAL— porque `tccutil` resuelve por LaunchServices y solo acepta
+// un `.app`. Con el ayudante empaquetado y registrado, responde
+// `Successfully reset`.
 //
-//	tccutil reset ScreenCapture cl.observer.agent                 -> rc=64
-//	tccutil reset ScreenCapture /opt/observeragent/observeragent  -> rc=64
-//	(como root y como el usuario de consola, mismo resultado)
-//	"No such bundle identifier ... (OSStatus error -10814)"
-//
-// `tccutil` sólo resuelve bundle identifiers y este agente es un ejecutable
-// suelto: no hay forma de nombrarlo. El intento anterior además declaraba éxito
-// cuando el servicio YA estaba en "no determinado", que es el ok falso que
-// motivó borrarlo.
-//
-// Si algún día el agente se distribuye como .app (ADR-018), este test es el
-// lugar donde consta por qué se sacó y qué habría que volver a medir.
-func TestNoSeIntentaTccutilPorqueElAgenteNoEsUnBundle(t *testing.T) {
+// De ahi el invariante que este test protege: `tccutil` puede invocarse, pero
+// SOLO contra el identificador del bundle. Contra el binario del servicio o
+// contra `cl.observer.agent` vuelve al rc=64 de siempre, y el sintoma seria un
+// paso que dice que reparo y no reparo nada.
+func TestTccutilSoloSeInvocaContraElBundleDelAyudante(t *testing.T) {
 	fuente, err := os.ReadFile("tccpermisos_darwin.go")
 	if err != nil {
 		t.Fatalf("no se pudo leer la fuente de la ronda: %v", err)
 	}
 
+	visto := false
 	for _, linea := range strings.Split(string(fuente), "\n") {
 		codigo := strings.TrimSpace(linea)
 		if strings.HasPrefix(codigo, "//") {
 			continue // las menciones en comentarios son justamente el registro
 		}
-		if strings.Contains(codigo, "tccutil") {
-			t.Errorf("la ronda vuelve a invocar tccutil, que está medido que "+
-				"rechaza a este cliente (rc=64): %q", codigo)
+		if !strings.Contains(codigo, "tccutil") {
+			continue
 		}
+		visto = true
+		if strings.Contains(codigo, "nixAgentBin") || strings.Contains(codigo, "tccIdentificadorAgente") {
+			t.Errorf("tccutil invocado contra el servicio, que esta medido que "+
+				"devuelve rc=64: %q", codigo)
+		}
+	}
+
+	// Control positivo: si el paso 2 desaparece, este test no puede quedar en
+	// verde por no haber mirado nada.
+	if !visto {
+		t.Error("la ronda ya no invoca tccutil: el paso de reparacion se perdio")
 	}
 }

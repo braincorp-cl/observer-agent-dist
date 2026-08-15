@@ -262,42 +262,19 @@ func imagenEnNegro(img image.Image) bool {
 	return true
 }
 
-// scriptPreflightPantalla consulta el permiso TCC de Grabación de pantalla en
-// macOS, SIN pedirle nada al usuario.
+// LOS SCRIPTS DE APPLESCRIPT DE LA PANTALLA SE FUERON EN T016.
 //
-// Vive acá y no en capture_darwin.go por lo mismo que `scriptEstadoTCCCamara`
-// vive en webcam.go: la CI corre `go test` en Linux, así que un texto guardado
-// dentro de un archivo con etiqueta `darwin` no lo mira ninguna prueba. Y ese
-// descuido ya costó una feature entera —el preflight de cámara no compilaba y
-// devolvía `false` para siempre (W-030-F2-08)—, así que el texto de todo script
-// que decida algo va en un archivo sin etiqueta.
+// Eran `scriptPreflightPantalla` y `scriptPedirPantalla`, dos `osascript`
+// cargando CoreGraphics, y estaban acá —sin etiqueta de plataforma— para que la
+// CI pudiera vigilarlos. Los reemplazó una llamada nativa desde el ayudante
+// (`observer_pantalla_preflight` / `observer_pantalla_pedir`, en
+// captura_darwin.m), y no por gusto: desde T016 el permiso lo tiene el BUNDLE
+// del ayudante, y un `osascript` lanzado por el servicio consultaba y pedía a
+// nombre del cliente equivocado.
 //
-// 🪤 NO DECLARA VARIABLES, y no es estilo: AppleScript reserva `st`, `nd`, `rd`
-// y `th` (los ordinales), y un `set st to …` rompe el script ENTERO.
-const scriptPreflightPantalla = `use framework "CoreGraphics"
-use scripting additions
-if (current application's CGPreflightScreenCaptureAccess()) then
-	return "1"
-else
-	return "0"
-end if`
-
-// scriptPedirPantalla es la hermana con efectos: ABRE EL DIÁLOGO del sistema.
-//
-// 🚫 Jamás en un ciclo de modo perdido activo — un diálogo en un equipo robado
-// le avisa al ladrón. La guardia está en `RondaPermisosTCC` (T016b/T016c), que
-// es el único lugar desde donde se invoca.
-//
-// Y sólo aparece diálogo cuando el permiso está "no determinado": si la fila de
-// TCC quedó como denegación —lo que hace cada auto-update, ver tccpermisos.go—
-// esta llamada devuelve `false` de inmediato y sin mostrar nada. Y no hay forma
-// de devolver esa fila a "no determinado" desde el agente: está medido que
-// `tccutil` no acepta a este cliente (ver tccpermisos_darwin.go). Cuando pasa,
-// la escalada termina avisándole a la persona.
-const scriptPedirPantalla = `use framework "CoreGraphics"
-use scripting additions
-if (current application's CGRequestScreenCaptureAccess()) then
-	return "1"
-else
-	return "0"
-end if`
+// 🪤 Lo que NO hay que perder de aquellos scripts, porque volverá a morder a
+// quien escriba AppleScript en este repo: `st`, `nd`, `rd` y `th` son PALABRAS
+// RESERVADAS —los ordinales `1st`, `2nd`…—, así que `set st to (…)` no compila
+// nunca y el script falla siempre, en silencio y devolviendo lo mismo que una
+// denegación legítima. Costó una medición de terreno entera descubrirlo. Queda
+// AppleScript vivo en `volume_darwin.go` y en el aviso de la ronda.

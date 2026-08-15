@@ -12,9 +12,10 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
+#import <CoreGraphics/CoreGraphics.h>
 #include <string.h>
 
-#include "webcam_darwin.h"
+#include "captura_darwin.h"
 
 static void observer_cam_detalle(char *detalle, size_t largo, const char *texto) {
   if (detalle == NULL || largo == 0 || texto == NULL) {
@@ -223,4 +224,20 @@ int observer_webcam_capturar(const char *destino, int descartar, double timeout_
 
     return OBSERVER_CAM_OK;
   }
+}
+
+int observer_camara_estado(void) {
+  @autoreleasepool {
+    return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+  }
+}
+
+int observer_pantalla_preflight(void) {
+  return CGPreflightScreenCaptureAccess() ? 1 : 0;
+}
+
+int observer_pantalla_pedir(void) {
+  // A diferencia de la camara, esta API no recibe un bloque: bloquea y devuelve
+  // el resultado. Por eso no hace falta semaforo ni plazo propio.
+  return CGRequestScreenCaptureAccess() ? 1 : 0;
 }

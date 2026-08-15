@@ -7,11 +7,11 @@
 // y en el Mac medido no estaban — y aunque hubieran estado, habrían chocado con
 // el mismo muro de contexto que resuelve el ayudante Aqua (ver webcamaqua.go).
 //
-// La implementación vive en webcam_darwin.m y sólo se compila con cgo. El
+// La implementación vive en captura_darwin.m y sólo se compila con cgo. El
 // release de macOS lleva cgo desde la feature 025 porque CoreLocation lo exige.
 
-#ifndef OBSERVER_WEBCAM_DARWIN_H
-#define OBSERVER_WEBCAM_DARWIN_H
+#ifndef OBSERVER_CAPTURA_DARWIN_H
+#define OBSERVER_CAPTURA_DARWIN_H
 
 #include <stddef.h>
 
@@ -41,4 +41,25 @@
 int observer_webcam_capturar(const char *destino, int descartar, double timeout_s,
                              char *detalle, size_t detalle_len);
 
-#endif // OBSERVER_WEBCAM_DARWIN_H
+// observer_camara_estado devuelve el AVAuthorizationStatus de la Camara SIN
+// pedir nada: 0 no determinado, 1 restringido, 2 denegado, 3 concedido.
+int observer_camara_estado(void);
+
+// observer_pantalla_preflight consulta si se puede grabar la pantalla, SIN
+// efectos secundarios. Devuelve 1 o 0.
+//
+// 🪤 Es un BOOLEANO, no una escala: un permiso denegado y uno sin determinar se
+// ven idénticos desde acá. Esa ambigüedad es la que obliga a la escalada de
+// T016c a intentar el diálogo primero y el reset después.
+int observer_pantalla_preflight(void);
+
+// observer_pantalla_pedir dispara el diálogo de Grabación de pantalla y
+// devuelve el estado resultante (1 concedido, 0 no).
+//
+// 🚫 NO se llama durante un ciclo de modo perdido: el diálogo delata al ladrón.
+// Y si la fila de TCC ya dice "permitido" con un csreq viejo, el sistema NO
+// pregunta y responde que sí de inmediato — por eso el resultado hay que
+// verificarlo contra el comportamiento real, no creerle.
+int observer_pantalla_pedir(void);
+
+#endif // OBSERVER_CAPTURA_DARWIN_H

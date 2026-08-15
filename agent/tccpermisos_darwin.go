@@ -6,11 +6,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -192,54 +190,50 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 		return reg
 	}
 
-	// Paso 1 — el diálogo, como hijo DIRECTO del servicio. Es el camino medido
-	// el 2026-08-13: `tccd` publicó `AUTHREQ_PROMPTING` con
-	// `Sub:{/opt/observeragent/observeragent}` y la fila nació a nombre del
-	// agente, con su cdhash vigente y `auth_reason=2` (consentimiento).
-	if a.pedirPermisoTCC(servicio, false) {
+	// Paso 1 — el diálogo, disparado POR EL AYUDANTE.
+	//
+	// 🔑 Tiene que pedirlo él y no el servicio, porque desde T016 el que captura
+	// es él: un permiso concedido al servicio quedaría a nombre de un cliente que
+	// ya no abre la cámara ni la pantalla. El sujeto del permiso es el
+	// `responsible process`, y el del ayudante es su propio bundle.
+	if a.pedirPermisoTCC(servicio) == tccEstadoConcedido {
 		reg.Concedido = true
-		reg.UltimoPaso = "dialogo_servicio"
+		reg.UltimoPaso = "dialogo_ayudante"
 		return reg
 	}
 
-	// Paso 2 — el mismo diálogo, pero desde la sesión gráfica del usuario.
-	// 🟡 NO MEDIDO: se agrega porque la cámara enseñó que el contexto de
-	// lanzamiento decide cosas que parecían decididas por el permiso, y porque
-	// las APIs de pantalla hablan con el servidor de ventanas. Si en terreno
-	// resulta que el paso 1 basta siempre, este paso no cuesta nada (no se
-	// llega a él). `launchctl asuser` no rompe la atribución: con el servicio
-	// como padre, el `responsible` sigue siendo el agente.
-	if a.pedirPermisoTCC(servicio, true) {
-		reg.Concedido = true
-		reg.UltimoPaso = "dialogo_sesion_usuario"
+	// Paso 2 — `tccutil reset` acotado al bundle, y volver a preguntar.
+	//
+	// Este paso EXISTIÓ, se borró el 2026-08-14 porque no funcionaba, y vuelve
+	// ahora porque el ayudante es un `.app`. Vale la pena dejar escrito el porqué
+	// de las dos cosas:
+	//
+	// Fallaba con `rc=64 · No such bundle identifier` en sus cuatro formas
+	// (identificador y ruta × root y usuario de consola), y se archivó como
+	// «tccutil sólo entiende bundles y el agente es un ejecutable suelto». La
+	// medición del 2026-08-15 mostró que el diagnóstico era incompleto:
+	// `com.apple.screensharing.agent` —un identificador de Apple perfectamente
+	// real— falla EXACTAMENTE IGUAL, porque `tccutil` resuelve por
+	// LaunchServices y sólo acepta un `.app`. Un `.bundle` tampoco sirve.
+	//
+	// Con el ayudante empaquetado y registrado con `lsregister`, el reset
+	// responde `Successfully reset` y la fila vuelve a «no determinado» — el
+	// único estado en que el sistema pregunta de nuevo. Y esto es lo que
+	// convierte a T016c en algo que REPARA en vez de sólo avisar.
+	//
+	// 🪤 La verificación compara contra el estado PREVIO. La versión anterior
+	// daba el reset por bueno con sólo ver «no determinado» al final, así que un
+	// servicio que YA estaba ahí —el caso de Grabación de pantalla el
+	// 2026-08-14— declaraba éxito sin haber hecho nada.
+	if estado != tccEstadoNoDeterminado && a.resetearPermisoTCC(servicio, estado) {
+		if a.pedirPermisoTCC(servicio) == tccEstadoConcedido {
+			reg.Concedido = true
+			reg.UltimoPaso = "dialogo_tras_reset"
+			return reg
+		}
+		reg.UltimoPaso = "reset_sin_concesion"
 		return reg
 	}
-
-	// NO HAY PASO 3. Lo hubo: un `tccutil reset` acotado a este cliente, para
-	// devolver la fila a "no determinado" —el único estado en que el sistema
-	// vuelve a preguntar—. Se midió el 2026-08-14 en el Mac de terreno y NO
-	// EXISTE esa vía:
-	//
-	//   tccutil reset ScreenCapture cl.observer.agent                 -> rc=64
-	//   tccutil reset ScreenCapture /opt/observeragent/observeragent  -> rc=64
-	//   "No such bundle identifier ... (OSStatus error -10814)"
-	//
-	// Los cuatro casos (las dos formas del cliente × root y usuario de consola)
-	// fallan igual: `tccutil` sólo resuelve BUNDLE IDENTIFIERS, y este agente es
-	// un ejecutable suelto. No es que la ruta esté mal escrita, es que no hay
-	// forma de nombrarlo. Mientras el agente no se distribuya como .app, el paso
-	// no puede funcionar en ningún equipo.
-	//
-	// Se borra en vez de arreglarse porque su verificación tenía además un OK
-	// FALSO: confirmaba el reset comprobando que el estado quedara en "no
-	// determinado", sin comparar contra el estado PREVIO, así que un servicio que
-	// ya estaba en "no determinado" —el caso de Grabación de pantalla en el
-	// terreno del 2026-08-14— daba el reset por bueno, declaraba éxito en el log
-	// y de paso se comía el segundo intento con la otra forma del cliente.
-	//
-	// Lo que resuelve de verdad esta fila rota es reinstalar el agente o firmarlo
-	// con Developer ID (ADR-018), y eso es lo que dice el aviso del paso
-	// siguiente.
 
 	a.Logger.Infoln("escalarPermisoTCC:", servicio, "sigue sin concederse tras agotar los intentos")
 	reg.UltimoPaso = "sin_dialogo_posible"
@@ -248,97 +242,94 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 
 // estadoPermisoTCC consulta el permiso SIN efectos secundarios.
 //
-// Se pregunta con `osascript` cargando el framework, y no con cgo, por dos
-// razones concretas: es EXACTAMENTE la consulta que ya se midió respondiendo en
-// el Mac de terreno (la cámara devolvió `0` y después de conceder, `3`), y
-// sirve igual en un binario compilado sin cgo. Los dos scripts viven en
-// archivos sin etiqueta de plataforma para que la CI los vigile.
-//
-// La consulta va por la sesión del usuario porque es la misma cadena que usa la
-// captura: lo que interesa no es lo que TCC opine en abstracto sino lo que le
-// va a responder al camino por el que se saca la evidencia. El `responsible`
-// sigue siendo el agente —lo publica `tccd`— aunque el proceso sea `osascript`.
+// 🔑 SE LE PREGUNTA AL AYUDANTE, no al servicio. Lo que interesa no es lo que
+// TCC opine en abstracto sino lo que le va a responder al camino por el que se
+// saca la evidencia, y desde T016 ese camino es el bundle. Preguntado desde el
+// servicio, el estado sería el del servicio: un dato correcto sobre el proceso
+// equivocado, que es la peor clase de dato.
 //
 // 🪤 La pantalla NO tiene escala: `CGPreflightScreenCaptureAccess` es un
 // booleano, así que un permiso denegado y uno sin determinar se ven idénticos
-// desde acá. Por eso la escalada intenta primero el diálogo (que no muestra
-// nada si la fila es una denegación) y sólo después el reset.
+// desde acá. Por eso la escalada intenta primero el diálogo —que no muestra nada
+// si la fila es una denegación— y sólo después el reset.
 func (a *Agent) estadoPermisoTCC(servicio string) (int, error) {
-	script := scriptEstadoTCCCamara
-	if servicio == tccServicioPantalla {
-		script = scriptPreflightPantalla
+	resp, err := a.consultarAlAyudante(capturaTipoEstado, servicio, tccPlazoConsulta)
+	if err != nil {
+		return 0, err
 	}
+	return resp.Estado, nil
+}
 
+// pedirPermisoTCC dispara el diálogo del sistema y devuelve el estado resultante.
+//
+// El diálogo lo muestra el ayudante, en un proceso aparte, y no el servicio.
+// Dos razones y las dos importan: el sujeto del permiso tiene que ser el bundle
+// (ver `estadoPermisoTCC`), y el servicio no puede quedarse bloqueado tres
+// minutos esperando a que alguien conteste.
+//
+// Se devuelve el ESTADO y no un booleano: el booleano diría qué contestó la
+// persona, y lo que importa es en qué quedó la fila de TCC.
+func (a *Agent) pedirPermisoTCC(servicio string) int {
+	// El plazo del lado del servicio va holgado sobre el del diálogo: si el
+	// ayudante se cuelga, el que espera tiene que rendirse DESPUÉS que él, no
+	// antes, o se pierde una respuesta que sí llegó.
+	resp, err := a.consultarAlAyudante(capturaTipoPermiso, servicio, tccPlazoDialogo+30*time.Second)
+	if err != nil {
+		a.Logger.Debugln("pedirPermisoTCC:", servicio, err)
+		return tccEstadoNoDeterminado
+	}
+	return resp.Estado
+}
+
+// consultarAlAyudante despierta al ayudante para una pregunta de permisos.
+func (a *Agent) consultarAlAyudante(tipo, servicio string, plazo time.Duration) (capturaAquaRespuesta, error) {
+	uid, _, err := consoleUser()
+	if err != nil {
+		return capturaAquaRespuesta{}, err
+	}
+	if err := a.prepararAyudanteCaptura(uid); err != nil {
+		return capturaAquaRespuesta{}, err
+	}
+	return a.encargarAlAyudante(capturaAquaPedido{
+		ID:       nonceCaptura(),
+		Tipo:     tipo,
+		Servicio: servicio,
+	}, uid, plazo)
+}
+
+// resetearPermisoTCC devuelve la fila del ayudante a "no determinado".
+//
+// Corre como root y desde el SERVICIO, no desde el ayudante: `tccutil` necesita
+// alcanzar la TCC.db del sistema —donde vive la fila de Grabación de pantalla—
+// y está medido que lo consigue con SIP activo, porque el trabajo lo hace `tccd`
+// y no un `sqlite` directo.
+//
+// 🪤 EL `rc=0` NO PRUEBA NADA, y acá ya costó una vez: se compara el estado
+// contra el que había antes. Un `Successfully reset` sobre una fila que ya
+// estaba en "no determinado" es indistinguible de uno que arregló algo.
+func (a *Agent) resetearPermisoTCC(servicio string, estadoPrevio int) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), tccPlazoConsulta)
 	defer cancel()
 
-	cmd, err := a.newUserSessionCmd(ctx, "/usr/bin/osascript", "-e", script)
+	salida, err := exec.CommandContext(ctx, "/usr/bin/tccutil",
+		"reset", nombreServicioTCC(servicio), capturaAquaID).CombinedOutput()
 	if err != nil {
-		return 0, err
-	}
-
-	salida, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-
-	valor := strings.TrimSpace(string(salida))
-
-	if servicio == tccServicioPantalla {
-		if valor == "1" {
-			return tccEstadoConcedido, nil
-		}
-		return tccEstadoNoDeterminado, nil
-	}
-
-	estado, err := strconv.Atoi(valor)
-	if err != nil {
-		return 0, fmt.Errorf("respuesta inesperada de TCC: %q", valor)
-	}
-	return estado, nil
-}
-
-// pedirPermisoTCC dispara el diálogo del sistema y verifica el resultado.
-//
-// El diálogo se pide en un proceso HIJO y no acá dentro por dos razones: el
-// servicio no puede quedarse bloqueado tres minutos esperando a que alguien
-// conteste, y un fallo dentro de AVFoundation se lleva al hijo y no al agente.
-func (a *Agent) pedirPermisoTCC(servicio string, viaSesionUsuario bool) bool {
-	self, err := os.Executable()
-	if err != nil {
-		a.Logger.Debugln("pedirPermisoTCC: os.Executable():", err)
+		a.Logger.Debugln("resetearPermisoTCC:", servicio, err, strings.TrimSpace(string(salida)))
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tccPlazoDialogo)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	if viaSesionUsuario {
-		cmd, err = a.newUserSessionCmd(ctx, self, "-m", "tccpedir", servicio)
-		if err != nil {
-			a.Logger.Debugln("pedirPermisoTCC: sin sesión de usuario:", err)
-			return false
-		}
-	} else {
-		cmd = exec.CommandContext(ctx, self, "-m", "tccpedir", servicio)
-	}
-
-	salida, err := cmd.Output()
-	if err != nil {
-		a.Logger.Debugln("pedirPermisoTCC:", servicio, "el hijo falló:", err)
-		return false
-	}
-	a.Logger.Debugln("pedirPermisoTCC:", servicio, "sesion_usuario:", viaSesionUsuario,
-		"respuesta:", strings.TrimSpace(string(salida)))
-
-	// Lo que dijo el hijo es informativo. Lo que decide es el estado que ve el
-	// servicio, que es el sujeto real del permiso.
 	estado, err := a.estadoPermisoTCC(servicio)
 	if err != nil {
+		a.Logger.Debugln("resetearPermisoTCC: no se pudo verificar el efecto:", err)
 		return false
 	}
-	return estado == tccEstadoConcedido
+	if estado == estadoPrevio {
+		a.Logger.Debugln("resetearPermisoTCC:", servicio, "dijo que si y el estado no se movio de", estado)
+		return false
+	}
+
+	a.Logger.Infoln("resetearPermisoTCC:", servicio, "vuelto a no determinado; se puede volver a preguntar")
+	return true
 }
 
 // avisarPermisosTCC le dice a la persona lo que el sistema ya no le va a
@@ -424,46 +415,4 @@ func (a *Agent) LanzarRondaPermisosTCC() {
 		time.Sleep(espera)
 		a.RondaPermisosTCC(false)
 	}()
-}
-
-// RunPedirPermisoTCC es el modo `-m tccpedir`: el proceso hijo que DISPARA el
-// diálogo del sistema. Imprime una sola línea que el padre registra, con el
-// mismo formato de `-m geoprobe` y `-m screencapture`.
-//
-// Los dos permisos se piden por caminos distintos y no por gusto:
-//
-//   - **Pantalla**: `CGRequestScreenCaptureAccess()` es sincrónica y devuelve un
-//     booleano, así que AppleScript la puede invocar tal cual — el mismo truco
-//     del preflight, sin compilar nada.
-//   - **Cámara**: `requestAccessForMediaType:completionHandler:` recibe un
-//     BLOQUE de Objective-C, y AppleScript no sabe construir bloques. No hay
-//     forma de pedirlo sin cgo; de ahí el puente de tccpermisos_darwin.m.
-//
-// Sin cgo (compilación con CGO_ENABLED=0, que es sólo un camino de desarrollo:
-// el release de macOS lleva cgo desde la 025) la cámara no se puede pedir y se
-// dice así, en vez de fingir que se intentó.
-func (a *Agent) RunPedirPermisoTCC(servicio string) {
-	switch servicio {
-	case tccServicioPantalla:
-		ctx, cancel := context.WithTimeout(context.Background(), tccPlazoDialogo)
-		defer cancel()
-
-		salida, err := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", scriptPedirPantalla).Output()
-		if err != nil {
-			fmt.Println("FAIL osascript:" + err.Error())
-			return
-		}
-		fmt.Println("OK " + strings.TrimSpace(string(salida)))
-
-	case tccServicioCamara:
-		estado, err := tccPedirCamaraNativo(tccPlazoDialogo)
-		if err != nil {
-			fmt.Println("FAIL " + err.Error())
-			return
-		}
-		fmt.Println("OK " + strconv.Itoa(estado))
-
-	default:
-		fmt.Println("FAIL servicio_desconocido")
-	}
 }
