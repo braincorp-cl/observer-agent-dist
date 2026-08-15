@@ -195,3 +195,48 @@ func TestTccutilSoloSeInvocaContraElBundleDelAyudante(t *testing.T) {
 		t.Error("la ronda ya no invoca tccutil: el paso de reparacion se perdio")
 	}
 }
+
+// TestLaPantallaEsperaLaConcesion fija el segundo arreglo del 2026-08-15.
+//
+// `CGRequestScreenCaptureAccess` no espera a la persona: abre el dialogo y
+// contesta "todavia no". Concluir con ese valor produjo un aviso falso en
+// terreno --la ronda se rindio a las 20:27:53 y la concesion aparecio a las
+// 20:28:11--, asi que los dos pedidos de la escalada tienen que pasar por la
+// espera y no por el pedido pelado.
+func TestLaPantallaEsperaLaConcesion(t *testing.T) {
+	fuente, err := os.ReadFile("tccpermisos_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer la fuente de la ronda: %v", err)
+	}
+	m := string(fuente)
+
+	inicio := strings.Index(m, "func (a *Agent) escalarPermisoTCC(")
+	if inicio < 0 {
+		t.Fatal("no esta escalarPermisoTCC: la escalada cambio de nombre")
+	}
+	cuerpo := m[inicio:]
+	if fin := strings.Index(cuerpo, "\n// pedirYEsperarTCC"); fin > 0 {
+		cuerpo = cuerpo[:fin]
+	}
+
+	pedidos := 0
+	for _, linea := range strings.Split(cuerpo, "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "//") {
+			continue
+		}
+		if strings.Contains(codigo, "a.pedirPermisoTCC(") {
+			t.Errorf("la escalada pide sin esperar la concesion: %q", codigo)
+		}
+		if strings.Contains(codigo, "a.pedirYEsperarTCC(") {
+			pedidos++
+		}
+	}
+
+	// Control positivo: los dos pasos que piden --el dialogo y el que sigue al
+	// reset-- tienen que seguir ahi. Si alguno se pierde, el test no puede
+	// quedar en verde por no haber mirado nada.
+	if pedidos != 2 {
+		t.Errorf("la escalada pide %d veces con espera; se esperaban 2 (dialogo y post-reset)", pedidos)
+	}
+}

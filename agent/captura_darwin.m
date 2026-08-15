@@ -237,7 +237,14 @@ int observer_pantalla_preflight(void) {
 }
 
 int observer_pantalla_pedir(void) {
-  // A diferencia de la camara, esta API no recibe un bloque: bloquea y devuelve
-  // el resultado. Por eso no hace falta semaforo ni plazo propio.
+  // A diferencia de la camara, esta API no recibe un bloque -- y TAMPOCO espera.
+  // Abre el dialogo y devuelve el estado de ESE instante, que con el dialogo
+  // recien abierto es siempre "todavia no". El valor de retorno, entonces, NO
+  // sirve para saber si la persona concedio: eso lo resuelve la espera del lado
+  // Go (pedirYEsperarTCC), que vuelve a consultar con un ayudante nuevo.
+  //
+  // El comentario anterior decia que bloqueaba, y esa creencia costo un aviso
+  // falso en terreno el 2026-08-15: la ronda se declaro vencida 18 s antes de
+  // que la concesion apareciera.
   return CGRequestScreenCaptureAccess() ? 1 : 0;
 }

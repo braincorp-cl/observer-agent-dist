@@ -471,21 +471,73 @@ func (a *Agent) capturarPantallaAqua(destino string) (string, string) {
 		return captureDenied, ""
 	}
 
+	// 🪤 NO SE CAPTURA DIRECTO SOBRE `destino`, aunque `destino` sea escribible.
+	//
+	// `screencapture` no escribe el archivo que se le pide: escribe un temporal
+	// HERMANO en el mismo directorio (`..<nombre>-XXXX`) y recién al final lo
+	// renombra. El buzón es de root con 0755 a propósito —para que nadie más
+	// pueda dejar ahí un pedido ni una respuesta falsa—, así que el ayudante,
+	// que corre como el usuario de consola, no puede crear ese temporal y la
+	// captura muere con `error = 13 (Permission denied)`.
+	//
+	// Medido en terreno el 2026-08-15, y con la peor cara posible: `screencapture`
+	// igual sale con 0. Sin permiso de TCC el síntoma es EXACTAMENTE el mismo
+	// —sale con 0 y no deja archivo—, así que durante un rato esto se leyó como
+	// una denegación de permiso que no existía.
+	//
+	// El temporal va al directorio temporal del propio usuario (0700, suyo), y de
+	// ahí se copia DENTRO del archivo ya precreado 0600: copiar y no mover es lo
+	// que conserva el dueño y el modo con que la evidencia nació cerrada.
+	tmpDir, err := os.MkdirTemp("", "observercaptura")
+	if err != nil {
+		return captureFailed, "no se pudo crear el directorio temporal: " + err.Error()
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmp := filepath.Join(tmpDir, "pantalla.png")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	salida, err := exec.CommandContext(ctx, "/usr/sbin/screencapture",
-		"-x", "-C", "-t", "png", destino).CombinedOutput()
+		"-x", "-C", "-t", "png", tmp).CombinedOutput()
 	if err != nil {
 		return captureFailed, strings.TrimSpace(string(salida))
 	}
 
 	// El `exit 0` no prueba el efecto: sin permiso, `screencapture` sale con 0 y
 	// puede no dejar nada. Lo que prueba la captura es el archivo.
-	info, err := os.Stat(destino)
+	info, err := os.Stat(tmp)
 	if err != nil || info.Size() == 0 {
 		return captureFailed, "screencapture salio con 0 y no dejo archivo utilizable"
 	}
 
+	if err := copiarSobreArchivo(tmp, destino); err != nil {
+		return captureFailed, "no se pudo dejar la captura en el buzon: " + err.Error()
+	}
+
 	return "", ""
+}
+
+// copiarSobreArchivo vuelca `origen` DENTRO de `destino`, que ya existe con el
+// dueño y el modo que le puso el servicio. Se abre sin O_CREATE a propósito: si
+// el archivo precreado no está, algo se saltó el protocolo del buzón y es mejor
+// fallar que crear uno nuevo con permisos de nadie.
+func copiarSobreArchivo(origen, destino string) error {
+	src, err := os.Open(origen)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(destino, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return dst.Sync()
 }

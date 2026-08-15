@@ -209,3 +209,61 @@ func TestObjetivoCDelAyudanteConsultaSinPedir(t *testing.T) {
 		t.Error("la captura pide el permiso: abriria un dialogo durante un ciclo de modo perdido")
 	}
 }
+
+// TestCapturaDePantallaNoEscribeEnElBuzonDeRoot fija el arreglo del 2026-08-15.
+//
+// `screencapture` no escribe el archivo que se le pide: escribe un temporal
+// HERMANO en el mismo directorio y despues lo renombra. Apuntarlo directo al
+// buzon --que es de root con 0755, y tiene que seguir siendolo-- lo hace morir
+// con `error = 13`, y con el peor sintoma posible: sale con 0, igual que cuando
+// falta el permiso de TCC.
+func TestCapturaDePantallaNoEscribeEnElBuzonDeRoot(t *testing.T) {
+	fuente, err := os.ReadFile("capturaaqua_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer el lado macOS del ayudante: %v", err)
+	}
+	m := string(fuente)
+
+	inicio := strings.Index(m, "func (a *Agent) capturarPantallaAqua(")
+	if inicio < 0 {
+		t.Fatal("no esta capturarPantallaAqua: el camino de la pantalla cambio de nombre")
+	}
+	cuerpo := m[inicio:]
+	if fin := strings.Index(cuerpo, "\nfunc "); fin > 0 {
+		cuerpo = cuerpo[:fin]
+	}
+
+	// Los comentarios se sacan ANTES de mirar: acá se nombra el buzón para
+	// explicar por qué no se escribe en él, y un chequeo ingenuo leería esa
+	// explicación como la falla que previene.
+	sinComentarios := []string{}
+	for _, linea := range strings.Split(cuerpo, "\n") {
+		if codigo := strings.TrimSpace(linea); !strings.HasPrefix(codigo, "//") {
+			sinComentarios = append(sinComentarios, codigo)
+		}
+	}
+	codigo := strings.Join(sinComentarios, " ")
+
+	// La invocación ocupa dos líneas, así que se mira la llamada ENTERA. Mirar
+	// línea por línea dejaba pasar exactamente el defecto que se está fijando.
+	desde := strings.Index(codigo, "/usr/sbin/screencapture")
+	if desde < 0 {
+		t.Fatal("la captura ya no invoca screencapture")
+	}
+	hasta := strings.Index(codigo[desde:], "CombinedOutput()")
+	if hasta < 0 {
+		t.Fatal("no se pudo delimitar la invocacion de screencapture")
+	}
+	if llamada := codigo[desde : desde+hasta]; strings.Contains(llamada, "destino") {
+		t.Errorf("screencapture apuntado al buzon: no puede crear ahi su temporal: %q", llamada)
+	}
+
+	// Controles positivos: el arreglo tiene que seguir estando, y la evidencia
+	// tiene que terminar en el archivo precreado, no en el temporal.
+	if !strings.Contains(cuerpo, "os.MkdirTemp") {
+		t.Error("la captura ya no usa un temporal propio del usuario")
+	}
+	if !strings.Contains(cuerpo, "copiarSobreArchivo(tmp, destino)") {
+		t.Error("la captura no se copia al archivo precreado del buzon")
+	}
+}

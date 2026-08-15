@@ -40,6 +40,26 @@ const (
 	// que tccd esté ocupado.
 	tccPlazoConsulta = 20 * time.Second
 
+	// tccPlazoConcesionPantalla es lo que se espera a que la concesión de
+	// Grabación de pantalla APAREZCA, después de haberla pedido.
+	//
+	// 🔑 Existe porque las dos APIs no se comportan igual, y creer lo contrario
+	// costó un aviso falso en terreno: `requestAccessForMediaType` (cámara)
+	// recibe un bloque y contesta cuando la persona contesta, pero
+	// `CGRequestScreenCaptureAccess` (pantalla) NO espera — abre el diálogo,
+	// devuelve el estado de ESE instante, que es "todavía no", y se va. Medido
+	// el 2026-08-15: la ronda se dio por vencida a las 20:27:53 y la fila quedó
+	// concedida a las 20:28:11, dieciocho segundos después.
+	//
+	// El plazo se parece al del diálogo porque el trabajo humano es el mismo, y
+	// en la pantalla es más largo: el sistema no concede desde el diálogo, manda
+	// a Ajustes.
+	tccPlazoConcesionPantalla = 3 * time.Minute
+
+	// tccSondeoConcesion separa dos consultas de la espera de arriba. Cada una
+	// despierta al ayudante, así que no puede ser un sondeo apretado.
+	tccSondeoConcesion = 15 * time.Second
+
 	// tccEsperaArranque separa la ronda del arranque del servicio. Con el
 	// equipo recién encendido la sesión gráfica puede no estar lista, y un
 	// diálogo lanzado contra una sesión a medio levantar es un diálogo que
@@ -196,7 +216,7 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 	// es él: un permiso concedido al servicio quedaría a nombre de un cliente que
 	// ya no abre la cámara ni la pantalla. El sujeto del permiso es el
 	// `responsible process`, y el del ayudante es su propio bundle.
-	if a.pedirPermisoTCC(servicio) == tccEstadoConcedido {
+	if a.pedirYEsperarTCC(servicio) == tccEstadoConcedido {
 		reg.Concedido = true
 		reg.UltimoPaso = "dialogo_ayudante"
 		return reg
@@ -226,7 +246,7 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 	// servicio que YA estaba ahí —el caso de Grabación de pantalla el
 	// 2026-08-14— declaraba éxito sin haber hecho nada.
 	if estado != tccEstadoNoDeterminado && a.resetearPermisoTCC(servicio, estado) {
-		if a.pedirPermisoTCC(servicio) == tccEstadoConcedido {
+		if a.pedirYEsperarTCC(servicio) == tccEstadoConcedido {
 			reg.Concedido = true
 			reg.UltimoPaso = "dialogo_tras_reset"
 			return reg
@@ -269,6 +289,44 @@ func (a *Agent) estadoPermisoTCC(servicio string) (int, error) {
 //
 // Se devuelve el ESTADO y no un booleano: el booleano diría qué contestó la
 // persona, y lo que importa es en qué quedó la fila de TCC.
+// pedirYEsperarTCC pide el permiso y, si el sistema todavía no lo dio, espera a
+// que aparezca en vez de declarar el fracaso en el acto.
+//
+// La espera es SÓLO para la pantalla, y no por prudencia: la cámara no la
+// necesita porque su API ya contesta cuando la persona contesta. Esperar ahí
+// también sería tiempo muerto por un permiso que ya está resuelto.
+//
+// 🪤 Cada consulta despierta un ayudante NUEVO, y eso es parte del arreglo, no un
+// costo: macOS cachea el estado de Grabación de pantalla por proceso, así que
+// preguntar de nuevo dentro del mismo ayudante devolvería el "todavía no" de
+// siempre por mucho que la persona ya haya concedido.
+func (a *Agent) pedirYEsperarTCC(servicio string) int {
+	if estado := a.pedirPermisoTCC(servicio); estado == tccEstadoConcedido {
+		return estado
+	}
+
+	if servicio != tccServicioPantalla {
+		return tccEstadoNoDeterminado
+	}
+
+	limite := time.Now().Add(tccPlazoConcesionPantalla)
+	for time.Now().Before(limite) {
+		time.Sleep(tccSondeoConcesion)
+
+		estado, err := a.estadoPermisoTCC(servicio)
+		if err != nil {
+			a.Logger.Debugln("pedirYEsperarTCC:", servicio, "no se pudo consultar:", err)
+			continue
+		}
+		if estado == tccEstadoConcedido {
+			a.Logger.Infoln("pedirYEsperarTCC:", servicio, "concedido mientras se esperaba")
+			return tccEstadoConcedido
+		}
+	}
+
+	return tccEstadoNoDeterminado
+}
+
 func (a *Agent) pedirPermisoTCC(servicio string) int {
 	// El plazo del lado del servicio va holgado sobre el del diálogo: si el
 	// ayudante se cuelga, el que espera tiene que rendirse DESPUÉS que él, no
