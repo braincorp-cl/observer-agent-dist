@@ -10,7 +10,7 @@ import (
 // Feature 030 · Fase 2 · T016 — pruebas del contrato con el ayudante Aqua.
 //
 // Corren en Linux, que es donde la CI ejecuta `go test`. Eso no es una
-// casualidad ni un descuido: es la razón entera de que webcamaqua.go no lleve
+// casualidad ni un descuido: es la razón entera de que capturaaqua.go no lleve
 // etiqueta de plataforma. Lo que se prueba acá es el texto del plist y el
 // formato de la respuesta, o sea las dos cosas que en un equipo real fallan sin
 // hacer ruido — un plist mal armado no carga y `kickstart` dice que no existe el

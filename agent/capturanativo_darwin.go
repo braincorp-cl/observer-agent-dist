@@ -18,7 +18,7 @@ import (
 // motivos del producto.
 //
 // La implementación está en webcam_darwin.m y sólo corre dentro del ayudante
-// Aqua (ver webcamaqua.go). Acá no hay lógica: hay una tabla, y existe como
+// Aqua (ver capturaaqua.go). Acá no hay lógica: hay una tabla, y existe como
 // tabla para que el día que alguien agregue un código en el .m tenga que venir a
 // decidir qué le muestra a quien está siguiendo un caso.
 

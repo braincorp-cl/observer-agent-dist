@@ -31,7 +31,7 @@ import (
 //     sesión gráfica abierta. Fuera de ahí la sesión de captura arranca, dice que
 //     todo está bien y devuelve cero cuadros. Un Mac en la pantalla de inicio de
 //     sesión reporta `sin_sesion` y no da foto. Está medido, no supuesto, y el
-//     porqué está en webcamaqua.go.
+//     porqué está en capturaaqua.go.
 //
 //  2. **EL LED SE ENCIENDE Y NO SE OCULTA.** Es hardware: en la enorme mayoría
 //     de los equipos el LED está cableado a la alimentación del sensor y no hay

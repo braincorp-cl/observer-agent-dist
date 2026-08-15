@@ -24,7 +24,7 @@ import (
 // actualizado. Un modo que tocara la cámara directamente daría verde acá y rojo
 // en producción.
 //
-// 🚫 No confundir con `-m webcamaqua`, que es el otro extremo del camino y lo
+// 🚫 No confundir con `-m capturaaqua`, que es el otro extremo del camino y lo
 // invoca launchd, nunca una persona.
 //
 // Imprime una sola línea (OK <ruta> / FAIL <motivo>), igual que en los otros SO.

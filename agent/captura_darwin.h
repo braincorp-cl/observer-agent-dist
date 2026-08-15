@@ -5,7 +5,7 @@
 // que instalar nada; su equivalente de cámara no existe. La versión anterior de
 // esta feature dependía de `imagesnap` o `ffmpeg`, que no vienen con el sistema
 // y en el Mac medido no estaban — y aunque hubieran estado, habrían chocado con
-// el mismo muro de contexto que resuelve el ayudante Aqua (ver webcamaqua.go).
+// el mismo muro de contexto que resuelve el ayudante Aqua (ver capturaaqua.go).
 //
 // La implementación vive en captura_darwin.m y sólo se compila con cgo. El
 // release de macOS lleva cgo desde la feature 025 porque CoreLocation lo exige.

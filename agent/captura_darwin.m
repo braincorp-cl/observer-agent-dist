@@ -6,7 +6,7 @@
 // error** —sesión corriendo, un input, un output, formato 1920×1080, dispositivo
 // libre—; cargado como LaunchAgent en `gui/<uid>`, fotografía con el rostro
 // legible. Quien mueva esta llamada fuera del ayudante Aqua va a ver exactamente
-// ese fallo silencioso. Ver webcamaqua.go.
+// ese fallo silencioso. Ver capturaaqua.go.
 
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
@@ -180,7 +180,7 @@ int observer_webcam_capturar(const char *destino, int descartar, double timeout_
     ObserverCamCaptor *captor =
         [[[ObserverCamCaptor alloc] initDescartando:descartar] autorelease];
     dispatch_queue_t cola =
-        dispatch_queue_create("cl.observer.agent.camara", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_create("cl.observer.agent.captura", DISPATCH_QUEUE_SERIAL);
     [salida setSampleBufferDelegate:captor queue:cola];
 
     [sesion startRunning];
