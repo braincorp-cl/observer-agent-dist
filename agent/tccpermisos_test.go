@@ -299,3 +299,41 @@ func TestLaPantallaSeResetSinPreguntarleAlEstado(t *testing.T) {
 		t.Error("la pantalla ya no ejecuta el reset acotado al bundle")
 	}
 }
+
+// TestTccutilRecibeLaClaveDelServicioYNoElNombreEnEspanol fija el defecto que
+// dejo muerta la reparacion en un Mac en espanol.
+//
+// `nombreServicioTCC` devuelve "Grabacion de pantalla", que es el texto del
+// aviso. `tccutil` espera la CLAVE ("ScreenCapture"). Con el nombre en espanol,
+// tccd responde `Invalid Service Name: kTCCServiceGrabacion de pantalla` y
+// tccutil lo informa como si no hubiera podido con el bundle.
+func TestTccutilRecibeLaClaveDelServicioYNoElNombreEnEspanol(t *testing.T) {
+	fuente, err := os.ReadFile("tccpermisos_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer la fuente de la ronda: %v", err)
+	}
+
+	visto := false
+	for _, linea := range strings.Split(string(fuente), "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "//") {
+			continue
+		}
+		if !strings.Contains(codigo, "\"reset\"") {
+			continue
+		}
+		visto = true
+		if strings.Contains(codigo, "nombreServicioTCC") {
+			t.Errorf("tccutil recibe el nombre para la persona, no la clave: %q", codigo)
+		}
+		if !strings.Contains(codigo, "servicio") {
+			t.Errorf("tccutil no recibe el servicio: %q", codigo)
+		}
+	}
+
+	// Control positivo: si el paso de reset desaparece, este test no puede
+	// quedar en verde por no haber mirado nada.
+	if !visto {
+		t.Error("ya no hay invocacion de reset: el paso de reparacion se perdio")
+	}
+}

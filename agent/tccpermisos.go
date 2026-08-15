@@ -205,6 +205,11 @@ func debeCorrerRondaTCC(reg intentoTCC, ahora time.Time, forzar bool) bool {
 }
 
 // nombreServicioTCC traduce el identificador a algo que una persona reconozca
+//
+// 🚫 SÓLO PARA TEXTO QUE LEE UNA PERSONA. `tccutil` espera la CLAVE del servicio
+// (`ScreenCapture`, `Camera`); pasarle esto deja el reset muerto con un error
+// que se lee como si el problema fuera otro. Ya pasó una vez: ver
+// `resetearPermisoTCC`.
 // en Ajustes del Sistema. Se usa en el aviso, no en el log.
 func nombreServicioTCC(servicio string) string {
 	switch servicio {

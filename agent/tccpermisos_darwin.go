@@ -397,8 +397,23 @@ func (a *Agent) ejecutarResetTCC(servicio string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), tccPlazoConsulta)
 	defer cancel()
 
+	// 🪤 EL NOMBRE PARA LA PERSONA NO ES EL NOMBRE PARA `tccutil`.
+	//
+	// Acá iba `nombreServicioTCC(servicio)`, que devuelve «Grabación de pantalla»
+	// —el texto del aviso, en español—, y `tccutil` espera la CLAVE del servicio
+	// (`ScreenCapture`, `Camera`). Medido en el Mac el 2026-08-15, en el log de
+	// `tccd`, que fue el único lugar donde se vio entero:
+	//
+	//   Invalid Service Name: kTCCServiceGrabación de pantalla
+	//     (Service name is invalid on this platform)
+	//
+	// El síntoma engañaba dos veces: `tccutil` respondía «Failed to reset
+	// Grabación de pantalla approval status for cl.observer.agent.captura», que
+	// se lee como que encontró el servicio y no pudo con el bundle; y a mano el
+	// mismo comando con `ScreenCapture` daba rc=0, así que la reparación parecía
+	// funcionar en todas las pruebas y fallar sólo en producción.
 	salida, err := exec.CommandContext(ctx, "/usr/bin/tccutil",
-		"reset", nombreServicioTCC(servicio), capturaAquaID).CombinedOutput()
+		"reset", servicio, capturaAquaID).CombinedOutput()
 	if err != nil {
 		a.Logger.Debugln("ejecutarResetTCC:", servicio, err, strings.TrimSpace(string(salida)))
 		return false
