@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Feature 030 · Fase 2 · T016 — pruebas del contrato con el ayudante Aqua.
@@ -330,5 +331,85 @@ func TestElTestigoDelBundleNoEsSuPropioEjecutable(t *testing.T) {
 		if strings.HasPrefix(codigo, "capturaAquaHuella") && strings.Contains(codigo, "capturaAquaAppDir") {
 			t.Errorf("la huella vive dentro del bundle y rompe la firma: %q", codigo)
 		}
+	}
+}
+
+// TestDespertarAlAyudanteNoComparteElPlazoEntreLlamadas fija el arreglo del
+// presupuesto compartido.
+//
+// Los tres `launchctl` de `despertarAyudanteCaptura` colgaban de un mismo
+// `context` de 15 s. El primer `kickstart -k` espera a que muera la corrida
+// anterior —y la respuesta del ayudante se escribe ANTES de que su proceso
+// termine de bajarse, así que el pedido siguiente siempre llega contra un
+// trabajo agonizante—, se comía el presupuesto, y el `bootstrap` y el
+// `kickstart` de reserva recibían un contexto ya vencido: el reintento existía
+// en el código y no existía en la práctica.
+//
+// En terreno eso fue `kickstart: context deadline exceeded` en el paso de la
+// pantalla cada vez que el de la cámara se demoraba — o sea justo cuando había
+// una persona contestando un diálogo. La pantalla no se denegaba: no se pedía.
+func TestDespertarAlAyudanteNoComparteElPlazoEntreLlamadas(t *testing.T) {
+	fuente, err := os.ReadFile("capturaaqua_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer el lado macOS del ayudante: %v", err)
+	}
+	m := string(fuente)
+
+	inicio := strings.Index(m, "func (a *Agent) despertarAyudanteCaptura(")
+	if inicio < 0 {
+		t.Fatal("no esta despertarAyudanteCaptura: el camino del kickstart cambio de nombre")
+	}
+	cuerpo := m[inicio:]
+	if fin := strings.Index(cuerpo, "\nfunc "); fin > 0 {
+		cuerpo = cuerpo[:fin]
+	}
+
+	// Los comentarios se sacan ANTES de mirar: el porque del arreglo nombra
+	// justamente lo que el arreglo prohibe.
+	codigo := []string{}
+	for _, linea := range strings.Split(cuerpo, "\n") {
+		if l := strings.TrimSpace(linea); !strings.HasPrefix(l, "//") {
+			codigo = append(codigo, l)
+		}
+	}
+	cuerpoCodigo := strings.Join(codigo, "\n")
+
+	// El defecto: un plazo abierto en la funcion es, por construccion, un plazo
+	// compartido por las tres llamadas.
+	if strings.Contains(cuerpoCodigo, "context.WithTimeout") {
+		t.Error("despertarAyudanteCaptura vuelve a abrir un plazo propio: las tres llamadas lo comparten y el reintento nace vencido")
+	}
+	if strings.Contains(cuerpoCodigo, "a.correrLaunchctl(ctx") {
+		t.Error("una llamada recibe un contexto de afuera: por ahi se cuela otra vez el presupuesto compartido")
+	}
+
+	// Controles positivos: las TRES llamadas tienen que seguir estando, y todas
+	// por la via acotada. Sin esto, borrar el reintento pasaria el test.
+	if n := strings.Count(cuerpoCodigo, "a.launchctlAcotado("); n != 3 {
+		t.Errorf("se esperaban 3 llamadas acotadas (kickstart, bootstrap, kickstart de reserva) y hay %d", n)
+	}
+	for _, sub := range []string{`"kickstart", "-k", destino`, `"bootstrap", "gui/"+uid`} {
+		if !strings.Contains(strings.ReplaceAll(cuerpoCodigo, " ", ""), strings.ReplaceAll(sub, " ", "")) {
+			t.Errorf("falta la invocacion %q", sub)
+		}
+	}
+}
+
+// TestElPlazoDelKickstartCubreLaEscaladaDeLaunchd fija el piso del numero.
+//
+// `kickstart -k` no vuelve hasta que la corrida anterior muere, y quien decide
+// cuando muere no es el ayudante sino launchd: SIGTERM y, si no obedece, SIGKILL
+// recien a los 20 s. Un plazo por debajo de esa escalada convierte una espera
+// legitima en un fallo, que es exactamente lo que hacian los 15 s.
+func TestElPlazoDelKickstartCubreLaEscaladaDeLaunchd(t *testing.T) {
+	if capturaAquaDespertarPlazo <= launchdExitTimeOut {
+		t.Fatalf("el plazo de launchctl (%s) no cubre la escalada de launchd (%s): un ayudante lento vuelve a ser un fallo",
+			capturaAquaDespertarPlazo, launchdExitTimeOut)
+	}
+
+	// Y no puede irse al otro extremo: la ronda de permisos recorre los servicios
+	// uno tras otro, y un plazo largo aca se paga en cada paso.
+	if capturaAquaDespertarPlazo > 2*time.Minute {
+		t.Errorf("el plazo de launchctl (%s) es tan largo que la ronda de permisos se cuelga en el primer servicio", capturaAquaDespertarPlazo)
 	}
 }

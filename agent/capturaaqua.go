@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Feature 030 · Fase 2 · T016 — el contrato con el ayudante de captura de macOS.
@@ -111,6 +112,31 @@ const (
 	// cámara o la pantalla. Con el mismo nombre, el ayudante se despertaría a sí
 	// mismo en un bucle infinito.
 	modoCapturaAqua = "capturaaqua"
+)
+
+// LOS PLAZOS DE `launchctl`, ACÁ Y NO EN EL ARCHIVO DE macOS, por la misma razón
+// que todo lo demás de este archivo: son un número que sólo se ve fallar en un
+// Mac, y la CI corre en Linux. Dejarlos donde la prueba los alcanza es lo que
+// permite fijar el piso por debajo del cual el arreglo se deshace.
+const (
+	// launchdExitTimeOut es lo que launchd espera entre el SIGTERM y el SIGKILL
+	// cuando se le pide matar un trabajo. Es el valor por omisión de macOS
+	// (`ExitTimeOut`) y el ayudante no lo cambia en su plist.
+	//
+	// Importa porque `kickstart -k` no vuelve hasta que la corrida anterior
+	// muere: este número, y no la rapidez del ayudante, es el techo real de la
+	// espera.
+	launchdExitTimeOut = 20 * time.Second
+
+	// capturaAquaDespertarPlazo acota CADA invocación de `launchctl`.
+	//
+	// 🪤 Cronometrado en el Mac el 2026-08-15: **107 ms** con el ayudante libre y
+	// **~7 s** con el anterior todavía vivo. El plazo que había —15 s, elegido
+	// con el número del caso libre— quedaba POR DEBAJO de la escalada de launchd:
+	// un ayudante que tardara en morir dejaba de ser una espera y pasaba a ser un
+	// fallo. Este va holgado sobre el peor caso que launchd permite, que es el
+	// único techo que se puede afirmar.
+	capturaAquaDespertarPlazo = launchdExitTimeOut + 25*time.Second
 )
 
 // Tipos de encargo que entiende el ayudante.

@@ -182,9 +182,11 @@ func (a *Agent) prepararAyudanteCaptura(uid string) error {
 		// El trabajo cargado apunta al bundle anterior: hay que descargarlo o
 		// launchd sigue ejecutando el ejecutable viejo. El `bootout` puede fallar
 		// porque no estaba cargado, y eso no es error.
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		a.correrLaunchctl(ctx, "bootout", "gui/"+uid+"/"+capturaAquaID)
+		//
+		// Va acotado por llamada como el resto: `bootout` también espera a que el
+		// trabajo muera, así que es de la misma familia que el `kickstart -k` y
+		// tenía el mismo plazo corto.
+		a.launchctlAcotado("bootout", "gui/"+uid+"/"+capturaAquaID)
 	}
 
 	return nil
@@ -348,25 +350,51 @@ func (a *Agent) dejarPedidoCaptura(p capturaAquaPedido, uid string) error {
 // launchd no lo ha visto y `kickstart` responde que no existe ese trabajo.
 // Cargarlo a mano en el dominio `gui/<uid>` lo resuelve sin pedirle a nadie que
 // cierre sesión.
+//
+// 🔑 EL PLAZO ES POR LLAMADA Y NO POR RONDA. Los tres `launchctl` compartían un
+// único `context` de 15 s, y esa sola línea dejaba a la pantalla sin intentarse:
+//
+//  1. El ayudante de la cámara sigue vivo cuando llega el pedido siguiente — la
+//     respuesta se escribe ANTES de que el proceso termine de bajarse, así que
+//     el servicio la lee y encarga lo próximo contra un trabajo que todavía se
+//     está muriendo.
+//  2. El primer `kickstart -k` se queda esperando esa muerte y se come el
+//     presupuesto entero.
+//  3. El `bootstrap` y el `kickstart` de reserva reciben un contexto YA VENCIDO.
+//     No es que fallen: es que no pueden salir bien. El reintento existía en el
+//     código y no existía en la práctica.
+//
+// El síntoma en terreno el 2026-08-15 fue `kickstart: context deadline
+// exceeded` en el paso de la pantalla cada vez que el de la cámara se demoraba,
+// o sea justo cuando había una persona contestando un diálogo. La pantalla no
+// se denegaba: no se pedía.
 func (a *Agent) despertarAyudanteCaptura(uid string) error {
 	destino := "gui/" + uid + "/" + capturaAquaID
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	if _, err := a.correrLaunchctl(ctx, "kickstart", "-k", destino); err == nil {
+	if _, err := a.launchctlAcotado("kickstart", "-k", destino); err == nil {
 		return nil
 	}
 
-	if salida, err := a.correrLaunchctl(ctx, "bootstrap", "gui/"+uid, capturaAquaPlist); err != nil {
+	if salida, err := a.launchctlAcotado("bootstrap", "gui/"+uid, capturaAquaPlist); err != nil {
 		a.Logger.Debugln("despertarAyudanteCaptura: bootstrap:", err, salida)
 	}
 
-	salida, err := a.correrLaunchctl(ctx, "kickstart", "-k", destino)
+	salida, err := a.launchctlAcotado("kickstart", "-k", destino)
 	if err != nil {
 		return fmt.Errorf("kickstart: %w (%s)", err, salida)
 	}
 	return nil
+}
+
+// launchctlAcotado corre un `launchctl` con su PROPIO plazo.
+//
+// Existe para que el defecto de arriba no se pueda reintroducir: mientras el
+// contexto no se pueda pasar desde afuera, dos llamadas no pueden compartir un
+// presupuesto.
+func (a *Agent) launchctlAcotado(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), capturaAquaDespertarPlazo)
+	defer cancel()
+	return a.correrLaunchctl(ctx, args...)
 }
 
 func (a *Agent) correrLaunchctl(ctx context.Context, args ...string) (string, error) {
