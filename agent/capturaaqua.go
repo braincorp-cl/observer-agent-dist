@@ -70,6 +70,13 @@ const (
 	capturaAquaAppExe = capturaAquaAppDir + "/Contents/MacOS/ObserverCaptura"
 	capturaAquaAppPl  = capturaAquaAppDir + "/Contents/Info.plist"
 
+	// capturaAquaHuella guarda con qué binario del servicio se armó el bundle.
+	//
+	// 🪤 VIVE FUERA DEL BUNDLE, y no por gusto: `codesign` SELLA el contenido de
+	// `Contents/`, así que un archivo nuestro ahí adentro rompería la firma —y la
+	// firma es lo que TCC mira—. Por eso cuelga del directorio del agente.
+	capturaAquaHuella = nixAgentDir + "/.captura-origen"
+
 	// capturaAquaPlist es el LaunchAgent. `/Library/LaunchAgents` y no
 	// `~/Library/LaunchAgents` porque launchd lo carga solo en la sesión de
 	// CUALQUIER usuario que entre, sin que el agente tenga que enterarse de los

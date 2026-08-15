@@ -208,11 +208,25 @@ func (a *Agent) asegurarBundleCaptura() (bool, error) {
 		return false, err
 	}
 
-	// Comparar tamaño y fecha en vez de un hash: son dos `stat` contra leer diez
-	// megas en cada ciclo, y es exactamente el criterio con el que T016c decide
-	// que "el binario es otro" (ver `identidadDelEjecutable`).
-	if copia, err := os.Stat(capturaAquaAppExe); err == nil {
-		if copia.Size() == origen.Size() && copia.ModTime().Equal(origen.ModTime()) {
+	// 🪤 EL TESTIGO NO PUEDE SER EL EJECUTABLE DEL BUNDLE, y creer que sí dejó
+	// esta función rearmando el bundle EN CADA CONSULTA, para siempre.
+	//
+	// La versión anterior comparaba tamaño y fecha de la copia contra el binario
+	// del servicio, y copiaba la fecha para que sirviera de testigo — pero
+	// `codesign`, tres líneas más abajo, REESCRIBE esa copia: le agrega la firma
+	// (+32 bytes medidos) y le pone la fecha del firmado. La comparación no
+	// volvía a dar verdadera nunca.
+	//
+	// Medido el 2026-08-15 con la v2.15.24 en el Mac: una línea "armando el
+	// bundle" cada 15 segundos, y el `tccutil reset` fallando con `rc=70` un
+	// segundo después de un rearmado, contra un bundle que se estaba
+	// reescribiendo debajo. El churn no era cosmético: rompía la reparación.
+	//
+	// El testigo es entonces una huella APARTE, con lo que se sabe del binario de
+	// origen — que es lo único que decide si hay que rearmar.
+	huella := fmt.Sprintf("%d|%d", origen.Size(), origen.ModTime().UnixNano())
+	if previa, err := os.ReadFile(capturaAquaHuella); err == nil && string(previa) == huella {
+		if _, err := os.Stat(capturaAquaAppExe); err == nil {
 			return false, nil
 		}
 	}
@@ -245,6 +259,12 @@ func (a *Agent) asegurarBundleCaptura() (bool, error) {
 	// reparable — que es la razón entera de que el ayudante sea un bundle.
 	if salida, err := exec.CommandContext(ctx, lsregisterBin, "-f", capturaAquaAppDir).CombinedOutput(); err != nil {
 		a.Logger.Debugln("asegurarBundleCaptura: lsregister falló:", err, strings.TrimSpace(string(salida)))
+	}
+
+	// La huella se escribe AL FINAL y sólo si todo salió bien: si el armado se
+	// cae a la mitad, la próxima vuelta tiene que volver a intentarlo.
+	if err := os.WriteFile(capturaAquaHuella, []byte(huella), 0600); err != nil {
+		a.Logger.Debugln("asegurarBundleCaptura: no se pudo dejar la huella:", err)
 	}
 
 	return true, nil

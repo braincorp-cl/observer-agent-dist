@@ -267,3 +267,68 @@ func TestCapturaDePantallaNoEscribeEnElBuzonDeRoot(t *testing.T) {
 		t.Error("la captura no se copia al archivo precreado del buzon")
 	}
 }
+
+// TestElTestigoDelBundleNoEsSuPropioEjecutable fija el arreglo del churn.
+//
+// `codesign` reescribe el ejecutable del bundle: le suma la firma y le cambia la
+// fecha. Cualquier testigo que mire ESE archivo se autodestruye, y el bundle
+// pasa a rearmarse en cada consulta -- medido: una vez cada 15 s, con el
+// `tccutil reset` fallando (rc=70) contra un bundle que se reescribia debajo.
+func TestElTestigoDelBundleNoEsSuPropioEjecutable(t *testing.T) {
+	fuente, err := os.ReadFile("capturaaqua_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer el lado macOS del ayudante: %v", err)
+	}
+	m := string(fuente)
+
+	inicio := strings.Index(m, "func (a *Agent) asegurarBundleCaptura(")
+	if inicio < 0 {
+		t.Fatal("no esta asegurarBundleCaptura")
+	}
+	cuerpo := m[inicio:]
+	if fin := strings.Index(cuerpo, "\nfunc "); fin > 0 {
+		cuerpo = cuerpo[:fin]
+	}
+
+	// La decision de rearmar va ANTES del primer copiado; ahi es donde no puede
+	// aparecer el ejecutable del bundle como testigo.
+	// El corte va en la LINEA DE CODIGO que anuncia el armado, no en su texto:
+	// ese texto tambien aparece en los comentarios de arriba --que explican el
+	// churn medido-- y cortar ahi dejaba el test mirando media funcion.
+	decision := cuerpo
+	if i := strings.Index(decision, "a.Logger.Infoln(\"asegurarBundleCaptura"); i > 0 {
+		decision = decision[:i]
+	}
+	for _, linea := range strings.Split(decision, "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "//") {
+			continue
+		}
+		if strings.Contains(codigo, "capturaAquaAppExe") && strings.Contains(codigo, "ModTime") {
+			t.Errorf("el testigo vuelve a ser el ejecutable firmado: %q", codigo)
+		}
+	}
+
+	// Controles positivos: la huella tiene que decidir, y tiene que escribirse
+	// despues de firmar y registrar, no antes.
+	if !strings.Contains(decision, "capturaAquaHuella") {
+		t.Error("la decision de rearmar ya no mira la huella del binario de origen")
+	}
+	iFirma := strings.Index(cuerpo, "lsregisterBin")
+	iHuella := strings.LastIndex(cuerpo, "capturaAquaHuella")
+	if iFirma < 0 || iHuella < iFirma {
+		t.Error("la huella no se escribe despues de firmar y registrar: un armado a medias quedaria dado por bueno")
+	}
+
+	// Y la huella no puede vivir dentro del bundle: codesign sella Contents/.
+	decl, err := os.ReadFile("capturaaqua.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer las constantes: %v", err)
+	}
+	for _, linea := range strings.Split(string(decl), "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "capturaAquaHuella") && strings.Contains(codigo, "capturaAquaAppDir") {
+			t.Errorf("la huella vive dentro del bundle y rompe la firma: %q", codigo)
+		}
+	}
+}
