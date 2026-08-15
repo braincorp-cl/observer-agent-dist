@@ -140,6 +140,14 @@ func main() {
 		// capturas de su pantalla y su ubicación. Imprime una sola línea
 		// (OK <archivo> <ruta> / FAIL <motivo>), igual que `-m screencapture`.
 		a.RunWebcamCapture(flag.Arg(0))
+	case "webcamaqua":
+		// Feature 030 (macOS): el ayudante que SÍ toca la cámara. Lo despierta
+		// launchd dentro de la sesión Aqua, que es el único contexto donde la
+		// cámara entrega cuadros — desde el servicio, con el permiso concedido,
+		// devuelve cero cuadros y ningún error. No se invoca a mano: lee el
+		// pedido que dejó el servicio y le contesta por el mismo buzón.
+		// Ver agent/webcamaqua.go.
+		a.RunWebcamAqua()
 	case "tccpermisos":
 		// Feature 030 (macOS): fuerza una ronda de permisos TCC. Es la vía
 		// manual —desde la biblioteca de scripts o un rawcmd— para cuando hay

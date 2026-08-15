@@ -70,11 +70,18 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 			a.CmdV2(opts)
 		}
 
+		// Feature 030 · T016: el ayudante Aqua se descarga de la sesión del
+		// usuario ANTES de borrar su plist. Al revés queda un trabajo registrado
+		// apuntando a un archivo que ya no existe, y launchd lo arrastra hasta
+		// que la persona cierre sesión.
+		a.descargarAyudanteCamara()
+
 		os.RemoveAll(defaultMacMeshSvcDir)
 		os.RemoveAll(nixMeshDir)
 		os.Remove(etcConfig)
 		os.RemoveAll(nixAgentDir)
 		os.Remove(macPlistPath)
+		os.Remove(webcamAquaPlist)
 	}
 }
 

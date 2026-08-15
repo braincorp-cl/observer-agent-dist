@@ -407,6 +407,19 @@ func (a *Agent) Install(i *Installer) {
 
 		os.WriteFile(macPlistPath, []byte(svc), 0644)
 
+		// Feature 030 · T016: el ayudante que saca la foto dentro de la sesión
+		// gráfica. Va como LaunchAgent y no como parte del servicio porque la
+		// cámara de macOS sólo entrega cuadros en el contexto Aqua — desde el
+		// LaunchDaemon devuelve cero cuadros y ningún error. Corre EL MISMO
+		// binario en LA MISMA RUTA, que es lo que le hace compartir la fila de
+		// TCC del servicio y heredar el permiso que concede la ronda de T016b.
+		// Todo el porqué está en agent/webcamaqua.go.
+		//
+		// El servicio lo repone en cada captura si falta, así que esto es para
+		// que el equipo recién instalado no dependa de que llegue un ciclo.
+		os.MkdirAll(webcamAquaDir, 0755)
+		os.WriteFile(webcamAquaPlist, []byte(webcamAquaPlistContenido(nixAgentBin)), 0644)
+
 		// Feature 030 · T016b: la marca hace que el servicio pida los permisos
 		// de Cámara y Grabación de pantalla en su primer arranque, que es
 		// AHORA — con la persona que está instalando todavía frente al equipo.

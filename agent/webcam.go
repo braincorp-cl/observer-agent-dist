@@ -18,13 +18,20 @@ import (
 // sistema. Lo que cambia respecto de la pantalla son tres cosas, y las tres
 // importan más de lo que parecen:
 //
-//  1. **LA WEBCAM NO NECESITA SESIÓN GRÁFICA.** La captura de pantalla depende
-//     de que alguien haya abierto sesión: sin escritorio no hay nada que
-//     capturar y el ciclo reporta `sin_sesion`. La cámara es un dispositivo del
-//     sistema, así que el agente la abre aunque el equipo esté en la pantalla de
-//     inicio de sesión. Para un equipo robado eso la vuelve MÁS útil que la
-//     pantalla, no menos: a quien se lo llevó se le puede tomar la foto antes de
-//     que entre a ninguna cuenta.
+//  1. **LA WEBCAM NO NECESITA SESIÓN GRÁFICA — SALVO EN macOS.** La captura de
+//     pantalla depende de que alguien haya abierto sesión: sin escritorio no hay
+//     nada que capturar y el ciclo reporta `sin_sesion`. La cámara es un
+//     dispositivo del sistema, así que en Windows y en Linux el agente la abre
+//     aunque el equipo esté en la pantalla de inicio de sesión. Para un equipo
+//     robado eso la vuelve MÁS útil que la pantalla, no menos: a quien se lo
+//     llevó se le puede tomar la foto antes de que entre a ninguna cuenta.
+//
+//     🔴 EN macOS ESTA PROPIEDAD NO SE CUMPLE, y no por una decisión nuestra: la
+//     cámara sólo entrega cuadros dentro del contexto Aqua, o sea dentro de una
+//     sesión gráfica abierta. Fuera de ahí la sesión de captura arranca, dice que
+//     todo está bien y devuelve cero cuadros. Un Mac en la pantalla de inicio de
+//     sesión reporta `sin_sesion` y no da foto. Está medido, no supuesto, y el
+//     porqué está en webcamaqua.go.
 //
 //  2. **EL LED SE ENCIENDE Y NO SE OCULTA.** Es hardware: en la enorme mayoría
 //     de los equipos el LED está cableado a la alimentación del sensor y no hay
@@ -33,7 +40,14 @@ import (
 //     Cualquier intento de ocultarlo sería, además del peor camino legal, una
 //     promesa que el hardware no puede cumplir.
 //
-//  3. **LOS PRIMEROS CUADROS SALEN NEGROS.** No es una avería: el sensor arranca
+//  3. **NINGUNA PLATAFORMA DEPENDE YA DE UNA HERRAMIENTA EXTERNA.** Hubo un
+//     motivo `sin_herramienta` mientras Linux llamaba a `fswebcam` y macOS a
+//     `imagesnap`; los dos se fueron (V4L2 nativo en la enmienda de W-030-F2-06,
+//     AVFoundation nativo en T016) y con ellos el motivo, porque un código que
+//     ya no puede emitirse es peor que no tenerlo: aparece en el catálogo de la
+//     consola y en la documentación como si fuera un estado posible.
+//
+//  4. **LOS PRIMEROS CUADROS SALEN NEGROS.** No es una avería: el sensor arranca
 //     con la exposición automática sin converger y entrega varios cuadros
 //     oscuros o completamente negros antes de estabilizar. Una implementación
 //     que pida "un cuadro" a la cámara obtiene, casi siempre, ese primer cuadro
@@ -51,8 +65,6 @@ const (
 	// La cámara existe pero otro programa la tiene tomada. Es información útil
 	// del caso —alguien está en una videollamada— y no un fallo del producto.
 	webcamBusy = "camara_ocupada"
-	// No hay ninguna herramienta de captura de cámara instalada (Linux).
-	webcamNoTool = "sin_herramienta"
 	// El SO niega el permiso de cámara. En macOS es el caso NORMAL y no una
 	// excepción: TCC no se concede por administración remota.
 	webcamDenied = "permiso_denegado"
@@ -67,6 +79,15 @@ const (
 	webcamFailed = "fallo_captura"
 	// Plataforma sin implementación de cámara.
 	webcamUnsupported = "so_no_soportado"
+	// Nadie tiene la sesión gráfica abierta. SÓLO macOS lo usa, por el contexto
+	// Aqua (ver la decisión 1 del encabezado). Es el MISMO código que ya usa la
+	// captura de pantalla, y comparte su traducción en la consola: es la misma
+	// situación descrita desde el mismo equipo, y darle un código propio
+	// obligaría a explicar dos veces lo mismo a quien sigue el caso.
+	//
+	// Es distinto de `permiso_denegado` y la diferencia es accionable: al equipo
+	// sin sesión no le falta un permiso, le falta que alguien entre.
+	webcamNoSession = "sin_sesion"
 )
 
 // cuadrosDeCalentamiento es cuántos cuadros se descartan antes de quedarse con
