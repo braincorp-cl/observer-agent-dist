@@ -245,7 +245,7 @@ func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Ti
 	// daba el reset por bueno con sólo ver «no determinado» al final, así que un
 	// servicio que YA estaba ahí —el caso de Grabación de pantalla el
 	// 2026-08-14— declaraba éxito sin haber hecho nada.
-	if estado != tccEstadoNoDeterminado && a.resetearPermisoTCC(servicio, estado) {
+	if a.valeLaPenaResetear(servicio, estado) {
 		if a.pedirYEsperarTCC(servicio) == tccEstadoConcedido {
 			reg.Concedido = true
 			reg.UltimoPaso = "dialogo_tras_reset"
@@ -365,14 +365,49 @@ func (a *Agent) consultarAlAyudante(tipo, servicio string, plazo time.Duration) 
 // 🪤 EL `rc=0` NO PRUEBA NADA, y acá ya costó una vez: se compara el estado
 // contra el que había antes. Un `Successfully reset` sobre una fila que ya
 // estaba en "no determinado" es indistinguible de uno que arregló algo.
-func (a *Agent) resetearPermisoTCC(servicio string, estadoPrevio int) bool {
+// valeLaPenaResetear decide si el paso 2 tiene algo que reparar, y lo repara.
+//
+// 🔑 LA PANTALLA NO SE PUEDE JUZGAR POR SU ESTADO, y creer que sí dejó al paso 2
+// muerto exactamente en el caso para el que existe.
+//
+// `CGPreflightScreenCaptureAccess` es un booleano, así que una fila VIEJA —la
+// que quedó con el csreq del ayudante anterior— se lee IGUAL que "nunca se
+// preguntó". Medido el 2026-08-15 al actualizar a la v2.15.23: la fila decía
+// "permitido" con el csreq de antes del update, Ajustes la mostraba encendida,
+// el preflight respondía que no, y la escalada se saltaba el reset porque el
+// estado le parecía "no determinado". La captura quedaba muerta con la
+// reparación a un paso.
+//
+// Por eso, en la pantalla, ni se condiciona por el estado ni se verifica por él
+// —no puede moverse—: el testigo es el rc de `tccutil` (0 hizo algo, 64 no
+// resolvió el bundle) y la prueba de verdad es la concesión que viene después.
+// Medido el mismo día: `rc=0` y la fila muerta desaparece; con un identificador
+// inventado, `rc=64`.
+func (a *Agent) valeLaPenaResetear(servicio string, estado int) bool {
+	if servicio == tccServicioPantalla {
+		return a.ejecutarResetTCC(servicio)
+	}
+	return estado != tccEstadoNoDeterminado && a.resetearPermisoTCC(servicio, estado)
+}
+
+// ejecutarResetTCC corre el reset acotado al bundle y devuelve si tccutil hizo
+// algo. No mira el estado: eso es trabajo de quien lo llama, y hay un servicio
+// donde no se puede.
+func (a *Agent) ejecutarResetTCC(servicio string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), tccPlazoConsulta)
 	defer cancel()
 
 	salida, err := exec.CommandContext(ctx, "/usr/bin/tccutil",
 		"reset", nombreServicioTCC(servicio), capturaAquaID).CombinedOutput()
 	if err != nil {
-		a.Logger.Debugln("resetearPermisoTCC:", servicio, err, strings.TrimSpace(string(salida)))
+		a.Logger.Debugln("ejecutarResetTCC:", servicio, err, strings.TrimSpace(string(salida)))
+		return false
+	}
+	return true
+}
+
+func (a *Agent) resetearPermisoTCC(servicio string, estadoPrevio int) bool {
+	if !a.ejecutarResetTCC(servicio) {
 		return false
 	}
 

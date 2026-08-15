@@ -240,3 +240,62 @@ func TestLaPantallaEsperaLaConcesion(t *testing.T) {
 		t.Errorf("la escalada pide %d veces con espera; se esperaban 2 (dialogo y post-reset)", pedidos)
 	}
 }
+
+// TestLaPantallaSeResetSinPreguntarleAlEstado fija el tercer arreglo del
+// 2026-08-15, que es el que resucita la reparacion.
+//
+// En la pantalla el estado NO distingue "nunca se pregunto" de "hay una fila
+// vieja que ya no matchea el csreq": las dos se leen como no-determinado. Con el
+// paso 2 condicionado a que el estado sea otra cosa, la reparacion nunca corria
+// -- justo en el unico caso para el que existe.
+func TestLaPantallaSeResetSinPreguntarleAlEstado(t *testing.T) {
+	fuente, err := os.ReadFile("tccpermisos_darwin.go")
+	if err != nil {
+		t.Fatalf("no se pudo leer la fuente de la ronda: %v", err)
+	}
+	m := string(fuente)
+
+	cuerpo := func(firma string) string {
+		i := strings.Index(m, firma)
+		if i < 0 {
+			t.Fatalf("no esta %q", firma)
+		}
+		resto := m[i+len(firma):]
+		if fin := strings.Index(resto, "\n}\n"); fin > 0 {
+			return resto[:fin]
+		}
+		return resto
+	}
+
+	// La escalada ya no puede condicionar el reset por el estado: esa decision
+	// se mudo a valeLaPenaResetear, que sabe que hay un servicio donde el estado
+	// no sirve para decidir.
+	escalada := cuerpo("func (a *Agent) escalarPermisoTCC(servicio string, reg intentoTCC, ahora time.Time) intentoTCC {")
+	for _, linea := range strings.Split(escalada, "\n") {
+		codigo := strings.TrimSpace(linea)
+		if strings.HasPrefix(codigo, "//") {
+			continue
+		}
+		if strings.Contains(codigo, "tccEstadoNoDeterminado") && strings.Contains(codigo, "resetear") {
+			t.Errorf("el paso 2 sigue condicionado por el estado: %q", codigo)
+		}
+	}
+
+	// Y la rama de la pantalla no puede mirar el estado para nada.
+	decision := cuerpo("func (a *Agent) valeLaPenaResetear(servicio string, estado int) bool {")
+	rama := decision
+	if i := strings.Index(rama, "tccServicioPantalla"); i >= 0 {
+		rama = rama[i:]
+		if fin := strings.Index(rama, "\t}"); fin > 0 {
+			rama = rama[:fin]
+		}
+	} else {
+		t.Fatal("valeLaPenaResetear ya no distingue la pantalla: el estado volvio a decidir por ella")
+	}
+	if strings.Contains(rama, "estado") {
+		t.Errorf("la rama de la pantalla vuelve a mirar el estado: %q", strings.TrimSpace(rama))
+	}
+	if !strings.Contains(rama, "ejecutarResetTCC") {
+		t.Error("la pantalla ya no ejecuta el reset acotado al bundle")
+	}
+}
