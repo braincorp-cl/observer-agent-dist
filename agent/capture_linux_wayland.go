@@ -659,10 +659,26 @@ func (a *Agent) RondaPortalWayland(forzar bool) {
 		return
 	}
 
-	// Si el escritorio tiene vía silenciosa, el portal sobra. Pedirlo sería
-	// molestar a una persona por una capacidad que ya tenemos.
-	if len(viasSilenciosasWayland(escritorioWayland(sess.Env), buscarBinario)) > 0 {
-		a.Logger.Debugln("RondaPortalWayland: este escritorio tiene captura silenciosa, no hace falta el portal")
+	// Si el escritorio tiene vía silenciosa QUE FUNCIONA, el portal sobra:
+	// pedirlo sería molestar a una persona por una capacidad que ya tenemos.
+	//
+	// 🪤 EL DEFECTO QUE ESTO CORRIGE (terreno, GNOME Shell 50.4, 2026-08-15):
+	// la guardia miraba si el BINARIO existía. En GNOME el binario es `gdbus`,
+	// que viene con glib2 y por lo tanto está SIEMPRE ⇒ la guardia concluía
+	// «este escritorio ya captura solo» y el enrolamiento no corría nunca.
+	// Pero la Shell **deniega** la llamada a todo cliente que no esté en su
+	// lista blanca (`checkInvocation`: `${método} is not allowed`, medido
+	// también en `SelectArea` y `FlashArea`, que ni capturan píxeles). O sea
+	// que en GNOME la vía existe, no funciona, y el único camino real —el
+	// portal— quedaba cerrado con llave: el ciclo reportaba
+	// `wayland_sin_autorizacion`, que se anuncia como REPARABLE, y la
+	// reparación estaba bloqueada por esta misma guardia.
+	//
+	// Ahora se decide por el EFECTO, igual que `correrViaWayland`: se intenta
+	// una captura de prueba y se borra. Es silenciosa por definición —son las
+	// vías que no preguntan nada—, así que no molesta a nadie.
+	if a.hayViaSilenciosaQueFunciona(sess) {
+		a.Logger.Debugln("RondaPortalWayland: este escritorio tiene captura silenciosa que funciona, no hace falta el portal")
 		return
 	}
 
@@ -687,6 +703,35 @@ func (a *Agent) RondaPortalWayland(forzar bool) {
 
 	a.Logger.Infoln("RondaPortalWayland: el portal quedó autorizado para", sess.Username)
 	a.marcarPortalWayland(sess, true)
+}
+
+// hayViaSilenciosaQueFunciona prueba las vías silenciosas del escritorio y dice
+// si ALGUNA entrega una imagen. La captura de prueba se borra en el acto: no es
+// evidencia de nada.
+func (a *Agent) hayViaSilenciosaQueFunciona(sess *userSession) bool {
+	vias := viasSilenciosasWayland(escritorioWayland(sess.Env), buscarBinario)
+	if len(vias) == 0 {
+		return false
+	}
+
+	prueba := filepath.Join(directorioCapturaUsuario(sess), "observer-sonda-via.png")
+	defer os.Remove(prueba)
+
+	return viaSilenciosaFunciona(vias, func(via viaWayland) bool {
+		return a.correrViaWayland(sess, via, prueba)
+	})
+}
+
+// viaSilenciosaFunciona se separó del resto para poder probar la DECISIÓN sin
+// un escritorio: el caso que importa es «hay vías y ninguna funciona», que es
+// exactamente GNOME 50 y era el que la guardia vieja leía como «ya captura».
+func viaSilenciosaFunciona(vias []viaWayland, correr func(viaWayland) bool) bool {
+	for _, via := range vias {
+		if correr(via) {
+			return true
+		}
+	}
+	return false
 }
 
 // LanzarRondaPortalWayland la corre en segundo plano tras el arranque del

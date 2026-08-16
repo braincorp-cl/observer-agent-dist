@@ -374,3 +374,59 @@ func TestEstadoPortalWaylandIlegible(t *testing.T) {
 		t.Fatal("un archivo truncado se leyó como autorización concedida")
 	}
 }
+
+// TestViaSilenciosaFuncionaDecidePorEfecto fija el defecto medido el 2026-08-15
+// en GNOME Shell 50.4: la guardia del enrolamiento decidía por PRESENCIA del
+// binario, y en GNOME el binario es `gdbus` —que viene con glib2 y está
+// siempre— mientras la Shell deniega la llamada a todo cliente fuera de su
+// lista blanca. Resultado: el portal, único camino real en GNOME, no se
+// enrolaba nunca, y el motivo `wayland_sin_autorizacion` se anunciaba como
+// reparable sin que nada pudiera repararlo.
+func TestViaSilenciosaFuncionaDecidePorEfecto(t *testing.T) {
+	gnome := viaWayland{nombre: viaGnome, bin: "/usr/bin/gdbus"}
+	grim := viaWayland{nombre: viaGrim, bin: "/usr/bin/grim"}
+
+	casos := []struct {
+		nombre   string
+		vias     []viaWayland
+		funciona map[string]bool
+		quiere   bool
+	}{
+		// EL caso. En GNOME 50 las dos vías existen y las dos fallan:
+		// `gdbus` con AccessDenied y `grim` porque Mutter no habla
+		// `wlr-screencopy`. La guardia vieja devolvía "sí hay vía" y mataba
+		// el enrolamiento.
+		{"GNOME 50: dos vías presentes y ninguna funciona", []viaWayland{gnome, grim}, nil, false},
+		{"alguna funciona", []viaWayland{gnome, grim}, map[string]bool{viaGrim: true}, true},
+		{"la primera funciona", []viaWayland{gnome, grim}, map[string]bool{viaGnome: true}, true},
+		{"sin vías", nil, nil, false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			got := viaSilenciosaFunciona(c.vias, func(v viaWayland) bool {
+				return c.funciona[v.nombre]
+			})
+			if got != c.quiere {
+				t.Errorf("viaSilenciosaFunciona(...) = %v, se esperaba %v", got, c.quiere)
+			}
+		})
+	}
+}
+
+// La sonda no puede parar en la primera vía: si la primera falla y la segunda
+// sirve, dar por bueno el fallo pediría el portal sin necesidad — justo lo que
+// la guardia existe para evitar.
+func TestViaSilenciosaFuncionaSigueTrasUnFallo(t *testing.T) {
+	vias := []viaWayland{{nombre: viaGnome}, {nombre: viaGrim}}
+
+	var probadas []string
+	viaSilenciosaFunciona(vias, func(v viaWayland) bool {
+		probadas = append(probadas, v.nombre)
+		return v.nombre == viaGrim
+	})
+
+	if len(probadas) != 2 {
+		t.Errorf("se probaron %v, se esperaban las dos vías", probadas)
+	}
+}
