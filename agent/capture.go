@@ -58,6 +58,15 @@ const (
 	// es que la captura fallara, es que no había nada que capturar — y para el
 	// caso significa que nadie está usando el equipo en este momento.
 	captureScreenOff = "pantalla_apagada"
+	// La imagen salió negra porque la sesión está BLOQUEADA. Es distinto de
+	// `pantalla_apagada`: apagada significa que el equipo lleva rato ocioso;
+	// bloqueada significa que alguien lo bloqueó y la sesión sigue despierta.
+	// Para quien opera un caso de robo esa diferencia es el dato — y medido en
+	// terreno (Fedora 44 KDE Wayland, 2026-08-15) es el estado MÁS FRECUENTE:
+	// un equipo robado casi siempre está bloqueado, así que sin este motivo la
+	// línea de tiempo entera se llenaba de "salió en negro", que se lee como
+	// avería del producto.
+	captureScreenLocked = "pantalla_bloqueada"
 	// La herramienta corrió y falló, o el archivo salió vacío/ilegible.
 	captureFailed = "fallo_captura"
 	// Plataforma sin implementación de captura.

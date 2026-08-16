@@ -71,7 +71,7 @@ func (a *Agent) capturarPantalla(nombre string) ScreenShot {
 		return ScreenShot{Reason: captureNoSession}
 	}
 
-	if sesionEsWayland(sess.Env) {
+	if sess.esWayland() {
 		// T021 (Fase 3): Wayland dejó de ser un callejón sin salida. La escalera
 		// de vías —y por qué el portal no se usa durante un caso activo— está en
 		// capture_linux_wayland.go. Las herramientas de abajo no se prueban acá:
@@ -121,6 +121,34 @@ func (a *Agent) capturarPantalla(nombre string) ScreenShot {
 	}
 
 	return ScreenShot{Path: destino}
+}
+
+// esWayland decide por qué rama va la captura, y le cree PRIMERO a logind.
+//
+// EL HALLAZGO QUE LA MOTIVA (terreno, Fedora 44 KDE Plasma 6, 2026-08-15): la
+// heurística de abajo daba `false` en una sesión Wayland pura, así que el ciclo
+// se iba entero por la rama X11. La causa es que Plasma 6 —y GNOME moderno—
+// levantan XWayland SIEMPRE y exportan `DISPLAY=:0`, y la regla "si hay DISPLAY
+// es X11" se lo tragaba.
+//
+// La premisa que justificaba esa regla era que bajo XWayland al menos se
+// capturan las ventanas X11, "mejor que nada". Medido en esa máquina: NO hay
+// nada. `import -window root` sale con 1 y sin archivo, y `scrot`/`maim` ni
+// están; la captura terminaba en `fallo_captura` sin haber probado nunca
+// `spectacle`, que sí funciona por la vía Wayland. La premisa era falsa.
+//
+// `Type` de logind no se deduce del entorno de ningún proceso: lo publica el
+// gestor de sesiones. La heurística sobre el entorno queda como respaldo para
+// cuando logind no contestó (equipos sin systemd, o el escaneo de /proc).
+func (s *userSession) esWayland() bool {
+	switch strings.ToLower(strings.TrimSpace(s.SessionType)) {
+	case "wayland":
+		return true
+	case "x11":
+		return false
+	}
+
+	return sesionEsWayland(s.Env)
 }
 
 // sesionEsWayland decide si el entorno cosechado corresponde a una sesión
@@ -233,14 +261,32 @@ func (a *Agent) motivoDePantallaNegra() string {
 		return captureBlank
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// El bloqueo se pregunta PRIMERO, y a logind, no a X. Dos razones medidas en
+	// terreno (Fedora 44 KDE sobre Wayland, 2026-08-15):
+	//
+	//   1. `xset` es de x11-xserver-utils y en esa máquina NO ESTÁ INSTALADO, así
+	//      que la rama de abajo devolvía el motivo genérico. En una sesión
+	//      Wayland pura tampoco tendría nada útil que informar aunque estuviera.
+	//   2. `LockedHint` la publica systemd-logind: no necesita bus de sesión ni
+	//      el puente del usuario, la lee el servicio como root, y vale igual en
+	//      GNOME, en KDE y en X11.
+	//
+	// La medición que lo motiva: 8 capturas seguidas con la sesión bloqueada
+	// dieron PNG válidos de 1366x768, `exit 0`, y un solo color — negro puro.
+	// Nada falla; simplemente no hay nada que ver. Sin esta consulta eso subía
+	// como `pantalla_en_negro`, indistinguible de una avería real.
+	if a.sesionBloqueada(ctx, sess.SessionID) {
+		return captureScreenLocked
+	}
+
 	bin, ok := buscarBinario("xset")
 	if !ok {
 		a.Logger.Debugln("motivoDePantallaNegra: no está xset, no se puede saber si la pantalla está apagada")
 		return captureBlank
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	salida, err := a.newSessionCmdFor(ctx, sess, bin, "q").Output()
 	if err != nil {
@@ -252,6 +298,38 @@ func (a *Agent) motivoDePantallaNegra() string {
 		return captureScreenOff
 	}
 	return captureBlank
+}
+
+// sesionBloqueada pregunta a systemd-logind si la sesión gráfica está bloqueada.
+//
+// Es una LECTURA ÚNICA a propósito. `lockedHintConfirmed` (response_linux.go)
+// consulta lo mismo en un bucle corto porque allá se acaba de mandar la señal de
+// bloqueo y hay que esperar a que el escritorio la dibuje. Acá no se mandó nada:
+// se está diagnosticando un estado que ya existe, y reintentar sólo retrasaría
+// el ciclo de captura.
+//
+// Ante cualquier duda —sin ID de sesión, sin `loginctl`, fallo de la consulta—
+// devuelve false y el diagnóstico sigue por las otras vías. Un motivo genérico
+// es honesto; uno inventado, no.
+func (a *Agent) sesionBloqueada(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+
+	loginctl, err := exec.LookPath("loginctl")
+	if err != nil {
+		a.Logger.Debugln("sesionBloqueada: no está loginctl, no se puede saber si la sesión está bloqueada")
+		return false
+	}
+
+	out, err := exec.CommandContext(ctx, loginctl, "show-session", sessionID,
+		"--property=LockedHint").Output()
+	if err != nil {
+		a.Logger.Debugln("sesionBloqueada: loginctl falló:", err)
+		return false
+	}
+
+	return parseLoginctlProps(out)["LockedHint"] == "yes"
 }
 
 // pantallaApagada lee la salida de `xset q`. Separada para poder probarla con

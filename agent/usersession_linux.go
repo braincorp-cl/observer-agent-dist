@@ -45,7 +45,11 @@ type userSession struct {
 	Username  string
 	Home      string
 	SessionID string // ID de sesión de systemd-logind, para `loginctl lock-session`
-	Env       []string
+	// SessionType es el `Type` que publica logind: "wayland", "x11" o vacío si
+	// no se pudo consultar. Es la única fuente confiable para elegir la rama de
+	// captura — ver `userSession.esWayland`.
+	SessionType string
+	Env         []string
 }
 
 // sessionEnvKeys son las variables que se cosechan del proceso del usuario. Se
@@ -90,12 +94,13 @@ func (a *Agent) findUserSession() (*userSession, error) {
 	}
 
 	s := &userSession{
-		UID:       logind.uid,
-		GID:       uint32(gid),
-		Username:  logind.username,
-		Home:      u.HomeDir,
-		SessionID: logind.sessionID,
-		Groups:    supplementaryGroups(u),
+		UID:         logind.uid,
+		GID:         uint32(gid),
+		Username:    logind.username,
+		Home:        u.HomeDir,
+		SessionID:   logind.sessionID,
+		SessionType: logind.tipo,
+		Groups:      supplementaryGroups(u),
 	}
 
 	env := harvestSessionEnv(logind.uid)
@@ -164,6 +169,10 @@ type logindSession struct {
 	username  string
 	sessionID string
 	display   string
+	// tipo es el `Type` de logind: "wayland" o "x11". Es el dato AUTORITATIVO
+	// sobre qué escritorio hay, y no coincide con lo que se puede deducir del
+	// entorno de un proceso. Ver `userSession.SessionType`.
+	tipo string
 }
 
 func loginctlActiveSession() (*logindSession, error) {
@@ -205,6 +214,7 @@ func loginctlActiveSession() (*logindSession, error) {
 			username:  name,
 			sessionID: sessionID,
 			display:   props["Display"],
+			tipo:      props["Type"],
 		}
 
 		if active {

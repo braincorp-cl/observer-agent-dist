@@ -655,7 +655,7 @@ func (a *Agent) RondaPortalWayland(forzar bool) {
 		return
 	}
 
-	if !sesionEsWayland(sess.Env) {
+	if !sess.esWayland() {
 		return
 	}
 

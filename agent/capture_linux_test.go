@@ -3,7 +3,15 @@
 
 package agent
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
 
 // Feature 030 · Fase 1 · la decisión que evita la pantalla negra en Linux.
 //
@@ -136,5 +144,130 @@ func TestPantallaApagada(t *testing.T) {
 		if got := pantallaApagada(c.salida); got != c.quiere {
 			t.Errorf("%s: pantallaApagada(...) = %v, se esperaba %v", c.nombre, got, c.quiere)
 		}
+	}
+}
+
+// fakeLoginctl deja en PATH un `loginctl` de mentira que imprime `salida` y sale
+// con `rc`. Es la única forma de cubrir `sesionBloqueada` sin un logind real.
+//
+// 🪤 DOS TRAMPAS QUE COSTÓ VER, las dos del andamiaje y no del código:
+//
+//  1. `printf '%s' "...\n"` NO sirve: /bin/sh no interpreta los escapes del
+//     argumento, así que el salto llegaba como barra literal. Por eso la salida
+//     va entre comillas simples, con el salto de línea real adentro.
+//  2. El script NO puede llamar a `cat` ni a nada externo: el test deja en PATH
+//     sólo este directorio, así que cualquier binario de fuera falla — y el
+//     `exit 0` de la última línea tapaba la falla dejando la salida vacía.
+//     `printf` es builtin de sh y no tiene ese problema.
+func fakeLoginctl(t *testing.T, salida string, rc int) {
+	t.Helper()
+
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s' " + comillaSh(salida) + "\nexit " + strconv.Itoa(rc) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "loginctl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("no se pudo escribir el loginctl de prueba: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+}
+
+// comillaSh envuelve un texto en comillas simples de shell, escapando las que
+// ya trae. Preserva los bytes tal cual, saltos de línea incluidos.
+func comillaSh(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func TestSesionBloqueada(t *testing.T) {
+	casos := []struct {
+		nombre    string
+		sessionID string
+		salida    string
+		rc        int
+		quiere    bool
+	}{
+		// Salida real de `loginctl show-session 2 --property=LockedHint` en el
+		// Fedora 44 KDE Wayland donde se midió esto (2026-08-15).
+		{"bloqueada", "2", "LockedHint=yes\n", 0, true},
+		{"desbloqueada", "2", "LockedHint=no\n", 0, false},
+		// Sin ID de sesión no hay a quién preguntarle. Devolver true acá sería
+		// inventar el diagnóstico más útil en vez del verdadero.
+		{"sin ID de sesión", "", "LockedHint=yes\n", 0, false},
+		{"loginctl falla", "2", "", 1, false},
+		{"salida sin la propiedad", "2", "Id=2\nActive=yes\n", 0, false},
+		{"salida vacía", "2", "", 0, false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			fakeLoginctl(t, c.salida, c.rc)
+
+			a := &Agent{Logger: loggerMudo()}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if got := a.sesionBloqueada(ctx, c.sessionID); got != c.quiere {
+				t.Errorf("sesionBloqueada(%q) = %v, se esperaba %v", c.sessionID, got, c.quiere)
+			}
+		})
+	}
+}
+
+// Sin `loginctl` en PATH la consulta no puede hacerse, y el diagnóstico tiene que
+// seguir por las otras vías en vez de afirmar nada.
+func TestSesionBloqueadaSinLoginctl(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	a := &Agent{Logger: loggerMudo()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if a.sesionBloqueada(ctx, "2") {
+		t.Error("sin loginctl, sesionBloqueada debe devolver false")
+	}
+}
+
+// TestEsWaylandLePrefiereALogind fija la regresión medida el 2026-08-15 en un
+// Fedora 44 KDE Plasma 6: la sesión era Wayland pura y el agente se iba por la
+// rama X11 porque XWayland exporta `DISPLAY=:0`. El caso "wayland con DISPLAY de
+// XWayland" es EL caso — si vuelve a dar false, la flota KDE y GNOME captura por
+// una vía que ahí no entrega nada.
+func TestEsWaylandLePrefiereALogind(t *testing.T) {
+	// Entorno real de `plasmashell` en esa máquina.
+	plasma6 := []string{
+		"DISPLAY=:0",
+		"WAYLAND_DISPLAY=wayland-0",
+		"XDG_SESSION_TYPE=wayland",
+		"XDG_CURRENT_DESKTOP=KDE",
+	}
+
+	casos := []struct {
+		nombre string
+		tipo   string
+		env    []string
+		quiere bool
+	}{
+		{"logind dice wayland y XWayland puso DISPLAY", "wayland", plasma6, true},
+		{"logind dice wayland aunque el entorno cosechado venga pelado", "wayland", nil, true},
+		// Al revés también manda logind: un WAYLAND_DISPLAY colgado en el entorno
+		// de una sesión X11 no debe desviar la captura.
+		{"logind dice x11", "x11", []string{"DISPLAY=:0", "WAYLAND_DISPLAY=wayland-0"}, false},
+		{"logind dice x11 con el entorno pelado", "x11", nil, false},
+		// Mayúsculas y espacios: la salida de loginctl es texto y no vale
+		// confiarse. Ver la regla de comparaciones invariantes de la flota.
+		{"logind contesta con mayúsculas", "Wayland", plasma6, true},
+		// Sin dato de logind (equipo sin systemd, o vino del escaneo de /proc)
+		// manda la heurística de siempre.
+		{"sin tipo, entorno X11", "", []string{"DISPLAY=:0"}, false},
+		{"sin tipo, entorno Wayland", "", []string{"WAYLAND_DISPLAY=wayland-0"}, true},
+		{"sin tipo, entorno vacío", "", nil, false},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			s := &userSession{SessionType: c.tipo, Env: c.env}
+			if got := s.esWayland(); got != c.quiere {
+				t.Errorf("esWayland() con Type=%q = %v, se esperaba %v", c.tipo, got, c.quiere)
+			}
+		})
 	}
 }
