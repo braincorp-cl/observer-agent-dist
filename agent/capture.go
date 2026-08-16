@@ -46,6 +46,10 @@ const (
 	// autorizado. Es distinto del anterior porque es REPARABLE, y quien opera el
 	// caso necesita saber que a ese equipo le falta un paso, no que no puede.
 	captureWaylandSinAutorizacion = "wayland_sin_autorizacion"
+	// Alguien vio el diálogo del portal y apretó "No compartir". Es distinto de
+	// un fallo técnico: el enrolamiento lo guarda como no concedido para que la
+	// próxima ronda lo sepa, en vez de reintentar como si nunca hubiera pasado.
+	captureWaylandCancelado = "wayland_cancelado"
 	// No hay ninguna herramienta de captura instalada (Linux).
 	captureNoTool = "sin_herramienta"
 	// El SO negó el permiso — macOS sin "Grabación de pantalla" concedida.

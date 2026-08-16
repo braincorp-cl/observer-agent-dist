@@ -180,64 +180,31 @@ func TestRespuestaGnomeShellOK(t *testing.T) {
 	}
 }
 
-func TestLeerRespuestaPortal(t *testing.T) {
+// TestRutaPeticionPortal fija la derivación del objeto Request. Suscribirse al
+// path equivocado ANTES de pedir es exactamente el defecto que cerró T021: la
+// respuesta viaja dirigida a ese objeto y, si no coincide, no se recibe nunca
+// —el portal concede y saca la foto, pero el agente reporta "no respondió".
+func TestRutaPeticionPortal(t *testing.T) {
 	const token = "obs4242_1723600000000000000"
 
-	concedida := "/org/freedesktop/portal/desktop/request/1_43/" + token +
-		": org.freedesktop.portal.Request::Response (uint32 0, {'uri': <'file:///run/user/1000/doc/ab/captura.png'>})"
-	cancelada := "/org/freedesktop/portal/desktop/request/1_43/" + token +
-		": org.freedesktop.portal.Request::Response (uint32 1, {})"
-	deOtro := "/org/freedesktop/portal/desktop/request/1_99/otroprograma" +
-		": org.freedesktop.portal.Request::Response (uint32 0, {'uri': <'file:///run/user/1000/doc/zz/ajena.png'>})"
+	casos := []struct {
+		nombre string
+		unico  string
+		quiero string
+	}{
+		{"nombre único normal", ":1.64", "/org/freedesktop/portal/desktop/request/1_64/" + token},
+		// El `.` va a `_` y el `:` inicial se cae; sin esto el path queda
+		// malformado y el AddMatch no engancha nada.
+		{"varios puntos", ":1.222.7", "/org/freedesktop/portal/desktop/request/1_222_7/" + token},
+	}
 
-	t.Run("concedida", func(t *testing.T) {
-		resp, ok := leerRespuestaPortal(concedida, token)
-		if !ok {
-			t.Fatal("no se reconoció la respuesta")
-		}
-		if resp.Codigo != 0 {
-			t.Errorf("código = %d, se esperaba 0", resp.Codigo)
-		}
-		if resp.URI != "file:///run/user/1000/doc/ab/captura.png" {
-			t.Errorf("URI = %q", resp.URI)
-		}
-	})
-
-	t.Run("cancelada por la persona", func(t *testing.T) {
-		resp, ok := leerRespuestaPortal(cancelada, token)
-		if !ok {
-			t.Fatal("no se reconoció la respuesta")
-		}
-		if resp.Codigo != 1 {
-			t.Errorf("código = %d, se esperaba 1", resp.Codigo)
-		}
-		if resp.URI != "" {
-			t.Errorf("una cancelación no trae URI, vino %q", resp.URI)
-		}
-	})
-
-	// El bus de sesión tiene tráfico de otros programas. Quedarse con la
-	// respuesta ajena significaría subir como evidencia la captura que pidió
-	// otra aplicación del equipo.
-	t.Run("la respuesta de otro programa se ignora", func(t *testing.T) {
-		if _, ok := leerRespuestaPortal(deOtro, token); ok {
-			t.Fatal("se tomó por propia la respuesta de otro programa")
-		}
-	})
-
-	t.Run("ruido del bus", func(t *testing.T) {
-		ruido := []string{
-			"",
-			"Monitoring signals from all objects owned by org.freedesktop.portal.Desktop",
-			"/org/freedesktop/portal/desktop: org.freedesktop.DBus.Properties::PropertiesChanged (...)",
-			"/org/freedesktop/portal/desktop/request/1_43/" + token + ": algo::Otro (uint32 0,)",
-		}
-		for _, l := range ruido {
-			if _, ok := leerRespuestaPortal(l, token); ok {
-				t.Errorf("se reconoció como respuesta: %q", l)
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := string(rutaPeticionPortal(c.unico, token)); got != c.quiero {
+				t.Fatalf("rutaPeticionPortal(%q) = %q, se esperaba %q", c.unico, got, c.quiero)
 			}
-		}
-	})
+		})
+	}
 }
 
 func TestRutaDesdeURI(t *testing.T) {

@@ -27,6 +27,7 @@ require (
 
 require (
 	github.com/fourcorelabs/wintoken v1.0.0
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jaypipes/ghw v0.12.0
 	github.com/kardianos/service v1.2.2
 	github.com/spf13/viper v1.19.0

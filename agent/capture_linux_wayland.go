@@ -4,7 +4,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 // Feature 030 · Fase 3 · T021 — captura de pantalla en sesiones Wayland.
@@ -68,12 +69,14 @@ import (
 // ejecutable: lo guarda en su propio almacén, contra el escritorio y la sesión
 // de esa persona. Actualizar el agente no lo rompe; cambiar de usuario, sí.
 //
-// ── LO QUE NO ESTÁ MEDIDO ─────────────────────────────────────────────────────
+// ── LO QUE ESTÁ MEDIDO ────────────────────────────────────────────────────────
 //
-// 🔴 Nada de este archivo se probó en terreno: no hay equipo Wayland en la
-// flota de prueba. Lo que sí está probado en la CI es toda la lógica que
-// decide y que parsea, que es donde estarían los errores caros. Las cuatro vías
-// se eligieron por documentación de cada compositor, no por medición.
+// ✅ Terreno GNOME Shell 50.4 / Wayland (Fedora 44, 2026-08-16): las dos vías
+// silenciosas fallan como se documenta (la Shell deniega, grim no habla con
+// Mutter) y el portal concede y entrega la captura por la vía nueva de una sola
+// conexión (ver capturaPorPortal). El enrolamiento pasó de `concedido:false` a
+// `concedido:true`. KDE Wayland ya estaba medido antes. Falta medir wlroots.
+// La CI cubre toda la lógica que decide y que parsea, sin bus.
 
 const (
 	// viaGrim y compañía son los nombres que aparecen en el log. Sirven para
@@ -83,9 +86,10 @@ const (
 	viaGrim      = "grim"
 	viaGnome     = "gnome-shell"
 	viaKde       = "spectacle"
-	portalDest   = "org.freedesktop.portal.Desktop"
-	portalPath   = "/org/freedesktop/portal/desktop"
-	portalMetodo = "org.freedesktop.portal.Screenshot.Screenshot"
+	portalDest         = "org.freedesktop.portal.Desktop"
+	portalPath         = "/org/freedesktop/portal/desktop"
+	portalMetodo       = "org.freedesktop.portal.Screenshot.Screenshot"
+	portalRequestIface = "org.freedesktop.portal.Request"
 )
 
 // waylandArchivoEstado guarda si el portal quedó autorizado, y para quién.
@@ -247,63 +251,16 @@ func respuestaGnomeShellOK(salida string) bool {
 	return strings.HasPrefix(strings.TrimSpace(salida), "(true,")
 }
 
-// respuestaPortal es lo que se saca de una línea de `gdbus monitor`.
-type respuestaPortal struct {
-	Codigo int
-	URI    string
-}
-
-// leerRespuestaPortal parsea una línea del monitor del bus.
+// rutaPeticionPortal predice el objeto `Request` que el portal creará para
+// nuestra petición, para poder suscribirse a su respuesta ANTES de pedir.
 //
-// La línea real se ve así:
-//
-//	/org/freedesktop/portal/desktop/request/1_43/obs123: org.freedesktop.portal.Request::Response (uint32 0, {'uri': <'file:///run/user/1000/doc/ab/captura.png'>})
-//
-// Se exige que traiga NUESTRO token: en el bus de sesión hay tráfico de otras
-// aplicaciones, y tomar la respuesta de otro sería, en el mejor de los casos,
-// subir la captura que pidió otro programa.
-//
-// El código importa tanto como el URI: `0` es concedido, `1` es que la persona
-// canceló y `2` es error del portal. Los tres son datos distintos y ninguno
-// debe leerse como "falló la captura" a secas.
-func leerRespuestaPortal(linea, token string) (respuestaPortal, bool) {
-	if !strings.Contains(linea, token) || !strings.Contains(linea, "Response") {
-		return respuestaPortal{}, false
-	}
-
-	i := strings.Index(linea, "(uint32 ")
-	if i < 0 {
-		return respuestaPortal{}, false
-	}
-	resto := linea[i+len("(uint32 "):]
-
-	j := strings.IndexAny(resto, ",)")
-	if j < 0 {
-		return respuestaPortal{}, false
-	}
-
-	var codigo int
-	if _, err := fmt.Sscanf(strings.TrimSpace(resto[:j]), "%d", &codigo); err != nil {
-		return respuestaPortal{}, false
-	}
-
-	return respuestaPortal{Codigo: codigo, URI: uriDeLaLinea(resto)}, true
-}
-
-// uriDeLaLinea saca el valor de `'uri': <'...'>`. Devuelve cadena vacía cuando
-// no hay URI, que es lo normal en las respuestas de cancelación y de error.
-func uriDeLaLinea(linea string) string {
-	const marca = "'uri': <'"
-	i := strings.Index(linea, marca)
-	if i < 0 {
-		return ""
-	}
-	resto := linea[i+len(marca):]
-	j := strings.Index(resto, "'")
-	if j < 0 {
-		return ""
-	}
-	return resto[:j]
+// El portal la deriva del nombre único del cliente y del `handle_token`: toma el
+// nombre (`:1.64`), le quita el `:` inicial y cambia los `.` por `_` (`1_64`), y
+// arma `/org/freedesktop/portal/desktop/request/<eso>/<token>`. Es contrato
+// público del protocolo `org.freedesktop.portal.Request`.
+func rutaPeticionPortal(nombreUnico, token string) dbus.ObjectPath {
+	sender := strings.ReplaceAll(strings.TrimPrefix(nombreUnico, ":"), ".", "_")
+	return dbus.ObjectPath("/org/freedesktop/portal/desktop/request/" + sender + "/" + token)
 }
 
 // rutaDesdeURI convierte `file:///run/user/1000/doc/ab/x%20y.png` en una ruta.
@@ -406,142 +363,47 @@ func (a *Agent) correrViaWayland(sess *userSession, via viaWayland, destino stri
 	return true
 }
 
-// capturaPorPortal hace el baile asíncrono del portal.
+// capturaPorPortal pide una captura por el portal, re-ejecutando el agente en la
+// sesión del usuario (modo `-m portalscreenshot`).
 //
-// El portal no devuelve la captura: devuelve el camino de una petición y manda
-// la respuesta después, como señal dirigida a quien preguntó. Por eso hacen
-// falta DOS procesos y en este orden estricto:
-//
-//  1. `gdbus monitor` arrancado ANTES de pedir nada. Si se lo arranca después,
-//     la respuesta puede llegar mientras el monitor todavía se conecta y se
-//     pierde para siempre — el fallo sería intermitente y dependiente de la
-//     carga del equipo, o sea, el peor de los fallos.
-//  2. `gdbus call` con nuestro `handle_token`, que es lo que permite reconocer
-//     nuestra respuesta entre el tráfico del bus.
-//
-// Los dos corren con el uid del usuario por el puente de la 028: el bus de
-// sesión no acepta a root, y aunque lo aceptara el portal atiende por sesión.
+// 🪤 POR QUÉ UN RE-EJECUTABLE Y NO `gdbus` — el defecto que esto corrige. El
+// portal contesta con una señal `Request::Response` DIRIGIDA al nombre único del
+// cliente que pidió. La versión vieja pedía con `gdbus call` en un proceso y
+// escuchaba con `gdbus monitor` en OTRO: la señal dirigida nunca llegaba al
+// monitor, así que el portal concedía y sacaba la foto pero el agente reportaba
+// "no respondió en 45s". Hay que pedir y escuchar en la MISMA conexión, y eso
+// `gdbus` CLI no lo permite. El hijo lo hace con godbus, corriendo además como
+// el usuario —el bus de sesión no acepta a root— y de paso resuelve la copia
+// desde lugares que root no puede leer. Ver agent/portalshot_linux.go.
 func (a *Agent) capturaPorPortal(sess *userSession, destino string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), waylandPlazoPortal)
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("no se pudo resolver el ejecutable propio: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), waylandPlazoPortal+5*time.Second)
 	defer cancel()
 
-	gdbus, ok := buscarBinario("gdbus")
-	if !ok {
-		return fmt.Errorf("no está gdbus")
-	}
-
-	token := tokenPortal(os.Getpid(), time.Now())
-
-	monitor := a.newSessionCmdFor(ctx, sess, gdbus, "monitor", "--session", "--dest", portalDest)
-	salida, err := monitor.StdoutPipe()
+	cmd := a.newSessionCmdFor(ctx, sess, self, "-m", "portalscreenshot", destino)
+	salida, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("no se pudo leer el monitor del bus: %w", err)
-	}
-	if err := monitor.Start(); err != nil {
-		return fmt.Errorf("no arrancó el monitor del bus: %w", err)
-	}
-	defer func() {
-		if monitor.Process != nil {
-			monitor.Process.Kill()
-		}
-		monitor.Wait()
-	}()
-
-	lector := bufio.NewScanner(salida)
-
-	// El monitor anuncia que está escuchando con una línea propia. Esperarla es
-	// lo que cierra la carrera del punto 1: hasta que no aparece, la conexión
-	// puede no estar registrada en el bus.
-	if !esperarMonitorListo(lector) {
-		return fmt.Errorf("el monitor del bus no llegó a escuchar")
+		return fmt.Errorf("el modo portalscreenshot falló: %w (%s)", err, strings.TrimSpace(string(salida)))
 	}
 
-	opciones := fmt.Sprintf("{'interactive': <false>, 'modal': <false>, 'handle_token': <'%s'>}", token)
-	pedido := a.newSessionCmdFor(ctx, sess, gdbus,
-		"call", "--session",
-		"--dest", portalDest,
-		"--object-path", portalPath,
-		"--method", portalMetodo,
-		"", opciones)
-
-	if out, err := pedido.CombinedOutput(); err != nil {
-		return fmt.Errorf("el portal rechazó la petición: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	for lector.Scan() {
-		resp, ok := leerRespuestaPortal(lector.Text(), token)
-		if !ok {
-			continue
-		}
-		switch resp.Codigo {
-		case 0:
-			ruta, ok := rutaDesdeURI(resp.URI)
-			if !ok {
-				return fmt.Errorf("el portal concedió pero devolvió un URI inservible: %q", resp.URI)
-			}
-			return a.rescatarCapturaDelPortal(ctx, sess, ruta, destino)
-		case 1:
-			// Alguien vio el diálogo y dijo que no. Se guarda como no
-			// concedido para que la próxima ronda de enrolamiento lo sepa.
+	shot := parsearSalidaCaptura(string(salida))
+	if shot.Reason != "" {
+		// Una cancelación se guarda como no concedido para que la próxima ronda
+		// de enrolamiento lo sepa, en vez de reintentar como si nada.
+		if shot.Reason == captureWaylandCancelado {
 			a.marcarPortalWayland(sess, false)
 			return fmt.Errorf("la petición al portal fue cancelada")
-		default:
-			return fmt.Errorf("el portal respondió con el código %d", resp.Codigo)
 		}
+		return fmt.Errorf("el portal no entregó captura: %s", shot.Reason)
 	}
 
-	return fmt.Errorf("el portal no respondió en %s", waylandPlazoPortal)
-}
-
-// esperarMonitorListo consume la cabecera de `gdbus monitor`.
-//
-// Se aceptan varias líneas porque la cabecera exacta cambió entre versiones de
-// glib; lo estable es que la primera línea de datos empieza con un camino de
-// objeto (`/`). Se corta ahí o cuando se reconoce el anuncio.
-func esperarMonitorListo(lector *bufio.Scanner) bool {
-	for i := 0; i < 5; i++ {
-		if !lector.Scan() {
-			return false
-		}
-		linea := strings.TrimSpace(lector.Text())
-		if strings.HasPrefix(linea, "Monitoring") || strings.HasPrefix(linea, "The name") {
-			return true
-		}
-		if strings.HasPrefix(linea, "/") {
-			// Ya empezó el tráfico: estaba listo desde antes.
-			return true
-		}
-	}
-	return false
-}
-
-// rescatarCapturaDelPortal mueve el archivo que dejó el portal a donde el ciclo
-// de captura espera encontrarlo.
-//
-// La copia la hace el USUARIO y no el agente: el portal suele dejar la imagen
-// en el montaje FUSE del document portal (`/run/user/<uid>/doc/...`), y un
-// montaje FUSE no es legible por root salvo que esté configurado con
-// `user_allow_other`. Root aquí no tiene más poder que el dueño, tiene menos.
-func (a *Agent) rescatarCapturaDelPortal(ctx context.Context, sess *userSession, origen, destino string) error {
-	cp, ok := buscarBinario("cp")
-	if !ok {
-		return fmt.Errorf("no está cp")
-	}
-
-	if out, err := a.newSessionCmdFor(ctx, sess, cp, "-f", origen, destino).CombinedOutput(); err != nil {
-		return fmt.Errorf("no se pudo copiar la captura del portal: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	// El original se borra siempre que se pueda: es la misma imagen y queda en
-	// el disco del equipo que estamos investigando.
-	if rm, ok := buscarBinario("rm"); ok {
-		a.newSessionCmdFor(ctx, sess, rm, "-f", origen).Run()
-	}
-
-	info, err := os.Stat(destino)
-	if err != nil || info.Size() == 0 {
+	if info, err := os.Stat(destino); err != nil || info.Size() == 0 {
 		os.Remove(destino)
-		return fmt.Errorf("la copia del portal no dejó archivo utilizable")
+		return fmt.Errorf("el portal dijo OK pero no dejó archivo utilizable en %s", destino)
 	}
 	return nil
 }

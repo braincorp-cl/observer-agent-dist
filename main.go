@@ -140,6 +140,13 @@ func main() {
 		// capturas de su pantalla y su ubicación. Imprime una sola línea
 		// (OK <archivo> <ruta> / FAIL <motivo>), igual que `-m screencapture`.
 		a.RunWebcamCapture(flag.Arg(0))
+	case "portalscreenshot":
+		// Feature 030 (Linux/Wayland): el servicio se re-ejecuta con este modo
+		// DENTRO de la sesión del usuario, porque el bus de sesión no acepta a
+		// root y el portal contesta con una señal dirigida al cliente que pidió
+		// —hay que pedir y escuchar en la MISMA conexión—. Imprime una sola línea
+		// (OK <ruta> / FAIL <motivo>) que el padre parsea. Ver agent/portalshot_linux.go.
+		a.RunPortalScreenshot(flag.Arg(0))
 	case "capturaaqua":
 		// Feature 030 (macOS): el ayudante que SÍ toca la cámara y la pantalla.
 		// Lo despierta launchd desde dentro de su bundle y en la sesión Aqua, que
@@ -156,6 +163,13 @@ func main() {
 		// auto-update. El servicio la corre solo en su arranque; esto es para
 		// no tener que esperarlo.
 		a.RondaPermisosTCC(true)
+	case "portalwayland":
+		// Feature 030 (Linux/Wayland): fuerza una ronda de enrolamiento del portal.
+		// Es la vía manual —desde la biblioteca de scripts o un rawcmd— para cuando
+		// hay una persona frente al equipo y hay que reponer el permiso. El servicio
+		// la corre solo en su arranque; esto es para no tener que esperarlo. Mismo
+		// patrón y misma razón que `-m tccpermisos`.
+		a.RondaPortalWayland(true)
 	case "getpython":
 		a.GetPython(true)
 	case "installdeno":
