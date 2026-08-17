@@ -24,6 +24,7 @@ package agent
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ole "github.com/go-ole/go-ole"
@@ -41,6 +42,17 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		return
 	}
 
+	// DIAG TEMPORAL (v2.15.31): acumula el paso/HRESULT de cada tramo para que
+	// el fallo en Windows real deje de ser un nulo mudo. Sólo pasos, errores y
+	// conteos; nunca IDs ni material (RN-A06). Se retira en el fix.
+	var diag []string
+	defer func() {
+		if len(diag) > 0 {
+			s := strings.Join(diag, " | ")
+			de.DiagProtectores = &s
+		}
+	}()
+
 	// 🪤 COM es por hilo. Sin LockOSThread el runtime de Go puede mover esta
 	// goroutine a otro hilo del sistema entre dos llamadas, y ahi el
 	// CoInitializeEx de mas abajo ya no vale: las invocaciones empiezan a
@@ -54,16 +66,22 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		// S_FALSE significa "ya estaba inicializado en este hilo", que es
 		// exito. Tratarlo como fallo era el bug de la 028 ⇒ comhresult.go.
 		if e, ok := err.(*ole.OleError); !ok || (e.Code() != S_OK && e.Code() != S_FALSE) {
+			diag = append(diag, fmt.Sprintf("CoInit FALLO: %v", err))
 			return
 		}
+		diag = append(diag, fmt.Sprintf("CoInit tolerado: %v", err))
+	} else {
+		diag = append(diag, "CoInit: nil")
 	}
 	defer ole.CoUninitialize()
 
 	svc, err := conectarNamespaceCifrado()
 	if err != nil {
+		diag = append(diag, fmt.Sprintf("conectar FALLO: %v", err))
 		return
 	}
 	defer svc.Release()
+	diag = append(diag, "conectar: ok")
 
 	for i := range de.Volumenes {
 		// Un volumen sin DeviceID no se puede pedir por ruta. No deberia
@@ -72,8 +90,49 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		if de.Volumenes[i].DeviceID == "" {
 			continue
 		}
-		aplicarLectura(&de.Volumenes[i], leerVolumen(svc, de.Volumenes[i].DeviceID))
+		l, vdiag := leerVolumenDiag(svc, de.Volumenes[i].DeviceID)
+		dl := "?"
+		if de.Volumenes[i].DriveLetter != nil {
+			dl = *de.Volumenes[i].DriveLetter
+		}
+		diag = append(diag, fmt.Sprintf("vol[%s] %s", dl, vdiag))
+		aplicarLectura(&de.Volumenes[i], l)
 	}
+}
+
+// leerVolumenDiag es leerVolumen con traza del paso donde falla (v2.15.31, temporal).
+// Devuelve sólo pasos, errores y CONTEOS -- nunca IDs de protector (RN-A06).
+func leerVolumenDiag(svc *ole.IDispatch, deviceID string) (lecturaProtectores, string) {
+	var l lecturaProtectores
+
+	obj, err := traerVolumen(svc, deviceID)
+	if err != nil {
+		return l, fmt.Sprintf("traer FALLO: %v", err)
+	}
+	defer obj.Release()
+
+	l.Porcentaje = leerPorcentaje(obj)
+	pctStr := "nil"
+	if l.Porcentaje != nil {
+		pctStr = fmt.Sprintf("%d", *l.Porcentaje)
+	}
+
+	ids, err := leerIDsDeProtectores(obj)
+	if err != nil {
+		return l, fmt.Sprintf("traer=ok pct=%s getKP FALLO: %v", pctStr, err)
+	}
+
+	l.Leida = true
+	l.Protectores = make([]protectorCrudo, 0, len(ids))
+	for _, id := range ids {
+		p := protectorCrudo{ID: id}
+		if tipo, err := leerTipoDeProtector(obj, id); err == nil {
+			p.Tipo, p.TipoLeido = tipo, true
+		}
+		l.Protectores = append(l.Protectores, p)
+	}
+
+	return l, fmt.Sprintf("OK pct=%s nprot=%d", pctStr, len(ids))
 }
 
 // conectarNamespaceCifrado abre una sesion de WMI por scripting.

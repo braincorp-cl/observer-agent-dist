@@ -1018,6 +1018,10 @@ type DiskEncryption struct {
 	Soportado bool                   `json:"soportado"`
 	Error     *string                `json:"error"`
 	Volumenes []DiskEncryptionVolume `json:"volumenes"`
+	// DIAG TEMPORAL (037 Fase 1b, v2.15.31): captura el paso/HRESULT donde la
+	// enriquecerConProtectores falla en Windows real -- sólo pasos, errores y
+	// CONTEOS, jamás IDs ni material de clave (RN-A06). Se retira en el fix.
+	DiagProtectores *string `json:"_diag_protectores,omitempty"`
 }
 
 // --- Tipos inlineados desde github.com/wh1te909/trmm-shared ---
