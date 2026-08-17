@@ -50,7 +50,15 @@ func GetDiskEncryption() rmm.DiskEncryption {
 	// %SystemDrive% es la unica fuente local de "cual es el volumen del
 	// sistema". Si por lo que sea viniera vacia, esVolumenDeSistema no marca
 	// ninguno: preferimos un equipo sin veredicto a un veredicto inventado.
-	return armarDiskEncryption(dst, os.Getenv("SystemDrive"))
+	de := armarDiskEncryption(dst, os.Getenv("SystemDrive"))
+
+	// Fase 1b: los protectores y el avance NO son propiedades de la clase, hay
+	// que invocarlos por COM. Va DESPUES y sin poder fallar hacia afuera, para
+	// que un tropiezo de COM deje los campos de la 1b nulos y no toque nada de
+	// lo que ya se leyo por consulta.
+	enriquecerConProtectores(&de)
+
+	return de
 }
 
 // codigoWMI saca el codigo WBEM de un error de COM.
