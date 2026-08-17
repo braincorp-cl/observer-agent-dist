@@ -952,6 +952,74 @@ type Win32_VideoController struct {
 	VideoProcessor            string
 }
 
+// Win32_EncryptableVolume espeja la clase CIM del namespace
+// root\CIMV2\Security\MicrosoftVolumeEncryption, que es donde vive el estado de
+// BitLocker. Los ocho campos son las propiedades REALES de la clase, medidas el
+// 2026-08-17 con Get-CimClass sobre tres equipos de la flota (Windows 10 Pro
+// 22H2, Windows 11 Pro 23H2 y Windows 11 IoT Enterprise LTSC 24H2): identicas
+// en los tres.
+//
+// Dos ausencias deliberadas, y ninguna es un olvido:
+//
+//   - El avance de la conversion (porcentaje) NO es propiedad de esta clase.
+//     Sale de GetConversionStatus(), que es una invocacion COM, igual que los
+//     protectores. Por eso viaja nulo en la fase 1a.
+//   - Los protectores tampoco son propiedad: GetKeyProtectors() y
+//     GetKeyProtectorType() son metodos. Fase 1b.
+//
+// El nombre del struct es el nombre de la clase a proposito: wmi.CreateQuery
+// arma "SELECT <campos> FROM <nombre del tipo>", asi que renombrarlo rompe la
+// consulta en silencio.
+type Win32_EncryptableVolume struct {
+	ConversionStatus                 uint32
+	DeviceID                         string
+	DriveLetter                      string
+	EncryptionMethod                 uint32
+	IsVolumeInitializedForProtection bool
+	PersistentVolumeID               string
+	ProtectionStatus                 uint32
+	VolumeType                       uint32
+}
+
+// DiskEncryptionVolume es el contrato de cable por volumen. Las claves json
+// tienen que ser IDENTICAS a las del espejo en natsapi/shared/types.go: un
+// desalineo produce structs vacios y un UPDATE que no matchea nada, sin error.
+//
+// Los punteros no son decoracion. Distinguen "no se pudo leer" de un cero
+// legitimo, que es justo el ok falso que esta feature tiene que evitar:
+// DriveLetter nulo es un volumen sin letra (normal, y nunca es el de sistema),
+// EncryptionPercentage nulo es "todavia no lo leemos" (fase 1b) y
+// KeyProtectorCount nulo es "no se pudo contar", que no es lo mismo que cero
+// protectores.
+type DiskEncryptionVolume struct {
+	DeviceID                         string   `json:"device_id"`
+	DriveLetter                      *string  `json:"drive_letter"`
+	ProtectionStatus                 uint32   `json:"protection_status"`
+	ConversionStatus                 uint32   `json:"conversion_status"`
+	EncryptionMethod                 uint32   `json:"encryption_method"`
+	PersistentVolumeID               string   `json:"persistent_volume_id"`
+	IsVolumeInitializedForProtection bool     `json:"is_volume_initialized_for_protection"`
+	EncryptionPercentage             *uint32  `json:"encryption_percentage"`
+	VolumeType                       uint32   `json:"volume_type"`
+	IsSystemVolume                   bool     `json:"is_system_volume"`
+	KeyProtectorCount                *int     `json:"key_protector_count"`
+	KeyProtectorTypes                []uint32 `json:"key_protector_types"`
+}
+
+// DiskEncryption es el sobre que viaja dentro del mensaje agent-wmi bajo la
+// clave "disk_encryption". No hay sujeto NATS nuevo ni ticker propio.
+//
+// Los tres campos existen para que el panel pueda separar tres cosas que se
+// parecen y no lo son: un equipo que no ofrece BitLocker (Soportado=false), uno
+// donde la consulta fallo (Error != nil) y uno que simplemente no tiene
+// volumenes cifrables (Volumenes vacio, que es un resultado legitimo). Un
+// vacio silencioso jamas debe mostrarse como "sin cifrar".
+type DiskEncryption struct {
+	Soportado bool                   `json:"soportado"`
+	Error     *string                `json:"error"`
+	Volumenes []DiskEncryptionVolume `json:"volumenes"`
+}
+
 // --- Tipos inlineados desde github.com/wh1te909/trmm-shared ---
 //
 // Atribucion de procedencia, NO branding: es el repo de un tercero del que se

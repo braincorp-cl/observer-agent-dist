@@ -572,6 +572,22 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 		a.Logger.Debugln(err)
 	}
 
+	// Feature 037 · el estado de cifrado NO sigue el patron de arriba, y la
+	// diferencia es deliberada.
+	//
+	// Las GetWin32_* devuelven `([]interface{}, error)` y aca el error se
+	// registra en el log y se DESCARTA: el mapa se queda con el valor cero y
+	// el servidor recibe una lista vacia indistinguible de "este equipo no
+	// tiene tarjetas de video". Para el inventario eso es tolerable.
+	//
+	// Para una feature de cumplimiento no lo es: una consulta que fallo y un
+	// equipo sin cifrar se veen igual en el panel, y el que decide sobre un
+	// equipo robado lee "sin cifrar" cuando la verdad era "no sabemos"
+	// (RF-07). Por eso GetDiskEncryption no devuelve error: mete el fallo
+	// DENTRO del sobre, junto con el "soportado", y los tres estados llegan
+	// distinguibles al otro lado.
+	diskEncryption := GetDiskEncryption()
+
 	wmiInfo["comp_sys_prod"] = compSysProd
 	wmiInfo["comp_sys"] = compSys
 	wmiInfo["network_config"] = netAdaptConfig
@@ -585,6 +601,7 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	wmiInfo["cpu"] = cpu
 	wmiInfo["usb"] = usb
 	wmiInfo["graphics"] = graphics
+	wmiInfo["disk_encryption"] = diskEncryption
 
 	return wmiInfo
 }
