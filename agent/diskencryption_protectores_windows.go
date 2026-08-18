@@ -30,6 +30,19 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 )
 
+// lecturaProtectoresHabilitada apaga la Fase 1b (protectores + % por COM).
+//
+// 🚫 DESHABILITADA (2026-08-17): la invocacion de metodos por ExecMethod_ sobre
+// Win32_EncryptableVolume CRASHEA el agente en Windows real -- access violation,
+// NO un panic de Go, asi que recover() no lo atrapa (medido en DESKTOP-Q11L59A
+// con 2.15.32: crash-loop cada ~30 s, sin stack en agent.log). El estado de
+// cifrado (Fase 1a) es correcto y no toca este camino; el detalle de protectores
+// y el porcentaje quedan en null (degradacion graciosa, RF-03/RF-05 de backlog).
+// Sospecha viva: doble-release del `in` que go-ole libera al pasarlo como
+// argumento a ExecMethod_. NO reactivar (poner en true) sin resolver esa memoria
+// y re-medir en Q11L59A. Ver finding_fase1b_protectores_null_en_windows_real.
+const lecturaProtectoresHabilitada = false
+
 // enriquecerConProtectores completa la Fase 1b sobre un sobre ya armado.
 //
 // No devuelve error a proposito, igual que GetDiskEncryption y por el mismo
@@ -37,7 +50,7 @@ import (
 // ya tiene su representacion ahi (nulo). Un error devuelto solo podria
 // registrarse en el log y descartarse, que es el patron que la feature evita.
 func enriquecerConProtectores(de *rmm.DiskEncryption) {
-	if len(de.Volumenes) == 0 {
+	if !lecturaProtectoresHabilitada || len(de.Volumenes) == 0 {
 		return
 	}
 
