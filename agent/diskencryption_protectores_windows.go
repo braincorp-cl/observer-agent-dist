@@ -24,7 +24,6 @@ package agent
 import (
 	"fmt"
 	"runtime"
-	"strings"
 
 	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
 	ole "github.com/go-ole/go-ole"
@@ -42,17 +41,6 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		return
 	}
 
-	// DIAG TEMPORAL (v2.15.31): acumula el paso/HRESULT de cada tramo para que
-	// el fallo en Windows real deje de ser un nulo mudo. Sólo pasos, errores y
-	// conteos; nunca IDs ni material (RN-A06). Se retira en el fix.
-	var diag []string
-	defer func() {
-		if len(diag) > 0 {
-			s := strings.Join(diag, " | ")
-			de.DiagProtectores = &s
-		}
-	}()
-
 	// 🪤 COM es por hilo. Sin LockOSThread el runtime de Go puede mover esta
 	// goroutine a otro hilo del sistema entre dos llamadas, y ahi el
 	// CoInitializeEx de mas abajo ya no vale: las invocaciones empiezan a
@@ -66,22 +54,16 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		// S_FALSE significa "ya estaba inicializado en este hilo", que es
 		// exito. Tratarlo como fallo era el bug de la 028 ⇒ comhresult.go.
 		if e, ok := err.(*ole.OleError); !ok || (e.Code() != S_OK && e.Code() != S_FALSE) {
-			diag = append(diag, fmt.Sprintf("CoInit FALLO: %v", err))
 			return
 		}
-		diag = append(diag, fmt.Sprintf("CoInit tolerado: %v", err))
-	} else {
-		diag = append(diag, "CoInit: nil")
 	}
 	defer ole.CoUninitialize()
 
 	svc, err := conectarNamespaceCifrado()
 	if err != nil {
-		diag = append(diag, fmt.Sprintf("conectar FALLO: %v", err))
 		return
 	}
 	defer svc.Release()
-	diag = append(diag, "conectar: ok")
 
 	for i := range de.Volumenes {
 		// Un volumen sin DeviceID no se puede pedir por ruta. No deberia
@@ -90,49 +72,8 @@ func enriquecerConProtectores(de *rmm.DiskEncryption) {
 		if de.Volumenes[i].DeviceID == "" {
 			continue
 		}
-		l, vdiag := leerVolumenDiag(svc, de.Volumenes[i].DeviceID)
-		dl := "?"
-		if de.Volumenes[i].DriveLetter != nil {
-			dl = *de.Volumenes[i].DriveLetter
-		}
-		diag = append(diag, fmt.Sprintf("vol[%s] %s", dl, vdiag))
-		aplicarLectura(&de.Volumenes[i], l)
+		aplicarLectura(&de.Volumenes[i], leerVolumen(svc, de.Volumenes[i].DeviceID))
 	}
-}
-
-// leerVolumenDiag es leerVolumen con traza del paso donde falla (v2.15.31, temporal).
-// Devuelve sólo pasos, errores y CONTEOS -- nunca IDs de protector (RN-A06).
-func leerVolumenDiag(svc *ole.IDispatch, deviceID string) (lecturaProtectores, string) {
-	var l lecturaProtectores
-
-	obj, err := traerVolumen(svc, deviceID)
-	if err != nil {
-		return l, fmt.Sprintf("traer FALLO: %v", err)
-	}
-	defer obj.Release()
-
-	l.Porcentaje = leerPorcentaje(obj)
-	pctStr := "nil"
-	if l.Porcentaje != nil {
-		pctStr = fmt.Sprintf("%d", *l.Porcentaje)
-	}
-
-	ids, err := leerIDsDeProtectores(obj)
-	if err != nil {
-		return l, fmt.Sprintf("traer=ok pct=%s getKP FALLO: %v", pctStr, err)
-	}
-
-	l.Leida = true
-	l.Protectores = make([]protectorCrudo, 0, len(ids))
-	for _, id := range ids {
-		p := protectorCrudo{ID: id}
-		if tipo, err := leerTipoDeProtector(obj, id); err == nil {
-			p.Tipo, p.TipoLeido = tipo, true
-		}
-		l.Protectores = append(l.Protectores, p)
-	}
-
-	return l, fmt.Sprintf("OK pct=%s nprot=%d", pctStr, len(ids))
 }
 
 // conectarNamespaceCifrado abre una sesion de WMI por scripting.
@@ -159,8 +100,11 @@ func conectarNamespaceCifrado() (*ole.IDispatch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ConnectServer(%s): %w", namespaceCifrado, err)
 	}
-	defer res.Clear()
 
+	// 🪤 NO `res.Clear()`: ToIDispatch NO suma una referencia, así que
+	// VariantClear liberaría el objeto que devolvemos y el llamador recibiría
+	// un puntero muerto —"Object is not connected to server" al primer .Get()—.
+	// La referencia de la VARIANT se transfiere al llamador, que hace Release.
 	svc := res.ToIDispatch()
 	if svc == nil {
 		return nil, fmt.Errorf("ConnectServer(%s) no devolvio un objeto", namespaceCifrado)
@@ -211,8 +155,9 @@ func traerVolumen(svc *ole.IDispatch, deviceID string) (*ole.IDispatch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("SWbemServices.Get: %w", err)
 	}
-	defer res.Clear()
 
+	// NO `res.Clear()`: la referencia del objeto se transfiere al llamador
+	// (que hace obj.Release()). Ver la nota en conectarNamespaceCifrado.
 	obj := res.ToIDispatch()
 	if obj == nil {
 		return nil, fmt.Errorf("SWbemServices.Get no devolvio un objeto")
@@ -347,8 +292,9 @@ func ejecutarMetodo(obj *ole.IDispatch, metodo string, in *ole.IDispatch) (*ole.
 	if err != nil {
 		return nil, fmt.Errorf("ExecMethod_(%s): %w", metodo, err)
 	}
-	defer res.Clear()
 
+	// NO `res.Clear()`: la referencia del SWbemObject de salida se transfiere
+	// al llamador (que hace out.Release()). Ver conectarNamespaceCifrado.
 	out := res.ToIDispatch()
 	if out == nil {
 		return nil, fmt.Errorf("ExecMethod_(%s) no devolvio parametros de salida", metodo)
@@ -365,11 +311,13 @@ func instanciarParametros(obj *ole.IDispatch, metodo string) (*ole.IDispatch, er
 	}
 	defer metodos.Clear()
 
+	// 🪤 Los objetos intermedios (coleccion, definicion, plantilla) NO llevan
+	// su propio Release: ToIDispatch no suma referencia, así que la libera el
+	// Clear de la VARIANT que los contiene. Ponerle ambos era un doble-release.
 	coleccion := metodos.ToIDispatch()
 	if coleccion == nil {
 		return nil, fmt.Errorf("Methods_ no devolvio una coleccion")
 	}
-	defer coleccion.Release()
 
 	item, err := oleutil.CallMethod(coleccion, "Item", metodo)
 	if err != nil {
@@ -381,7 +329,6 @@ func instanciarParametros(obj *ole.IDispatch, metodo string) (*ole.IDispatch, er
 	if definicion == nil {
 		return nil, fmt.Errorf("Methods_.Item(%s) no devolvio el metodo", metodo)
 	}
-	defer definicion.Release()
 
 	entrada, err := oleutil.GetProperty(definicion, "InParameters")
 	if err != nil {
@@ -393,14 +340,14 @@ func instanciarParametros(obj *ole.IDispatch, metodo string) (*ole.IDispatch, er
 	if plantilla == nil {
 		return nil, fmt.Errorf("%s no declara parametros de entrada", metodo)
 	}
-	defer plantilla.Release()
 
 	res, err := oleutil.CallMethod(plantilla, "SpawnInstance_")
 	if err != nil {
 		return nil, fmt.Errorf("SpawnInstance_ de %s: %w", metodo, err)
 	}
-	defer res.Clear()
 
+	// NO `res.Clear()`: transfiere la instancia de entrada al llamador, que
+	// hace in.Release(). Ver conectarNamespaceCifrado.
 	in := res.ToIDispatch()
 	if in == nil {
 		return nil, fmt.Errorf("SpawnInstance_ de %s no devolvio instancia", metodo)
