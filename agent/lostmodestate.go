@@ -45,6 +45,17 @@ const (
 	lostModeDefaultIntervalMin = 5
 )
 
+// lostModeCascade es la cascada de contramedidas de la feature 038, ya RESUELTA
+// por el servidor (precedencia incidente > equipo > global). Llega por los dos
+// canales —push por NATS y polling de config— y el agente sólo la ejecuta.
+type lostModeCascade struct {
+	AutoLock       bool
+	LockDelayMin   int
+	NoHibernate    bool
+	WebcamOverride bool
+	Alarm          bool
+}
+
 // persistedLostMode es lo que queda en disco entre ejecuciones.
 type persistedLostMode struct {
 	Active bool `json:"active"`
@@ -53,6 +64,14 @@ type persistedLostMode struct {
 	// minutos/segundos daría una cadencia 60 veces mayor o menor sin ningún
 	// síntoma visible.
 	IntervalMin int `json:"interval_min"`
+	// Feature 038: la cascada se persiste para poder REVERTIRLA tras un reinicio.
+	// Sin esto, un equipo con la no-hibernación aplicada que se reinicia perdería
+	// la referencia para restaurar el esquema de energía al recuperarlo.
+	AutoLock       bool `json:"auto_lock,omitempty"`
+	LockDelayMin   int  `json:"lock_delay_min,omitempty"`
+	NoHibernate    bool `json:"no_hibernate,omitempty"`
+	WebcamOverride bool `json:"webcam_override,omitempty"`
+	Alarm          bool `json:"alarm,omitempty"`
 }
 
 // Estado en memoria. Va en variables de paquete y no en el struct Agent porque
@@ -63,6 +82,10 @@ var (
 	lostModeMu          sync.RWMutex
 	lostModeActive      bool
 	lostModeIntervalMin = lostModeDefaultIntervalMin
+	// Feature 038: cascada vigente en memoria. La fijan los dos canales
+	// (setLostModeCascade) antes de llamar a SetLostMode, y el bucle del
+	// servicio la lee al cruzar una transición para aplicar/revertir.
+	lostModeCascadeVal lostModeCascade
 )
 
 // lostModeChanged avisa al bucle del servicio que el estado del modo perdido
@@ -200,6 +223,22 @@ func (a *Agent) getLostMode() (bool, int) {
 	return lostModeActive, lostModeIntervalMin
 }
 
+// setLostModeCascade fija la cascada resuelta en memoria. La llaman los dos
+// canales (push y config) JUSTO ANTES de SetLostMode, para que la persistencia
+// del estado incluya la cascada y el bucle la lea al cruzar la transición.
+func (a *Agent) setLostModeCascade(c lostModeCascade) {
+	lostModeMu.Lock()
+	lostModeCascadeVal = c
+	lostModeMu.Unlock()
+}
+
+// getLostModeCascade devuelve la cascada vigente en memoria.
+func (a *Agent) getLostModeCascade() lostModeCascade {
+	lostModeMu.RLock()
+	defer lostModeMu.RUnlock()
+	return lostModeCascadeVal
+}
+
 // SetLostMode fija el estado en memoria y lo persiste. Es idempotente y la
 // llaman los dos canales: el push por NATS y el polling de config.
 //
@@ -226,7 +265,16 @@ func (a *Agent) SetLostMode(active bool, intervalMin int) {
 
 	if active {
 		a.Logger.Infoln("SetLostMode: equipo marcado como PERDIDO, cadencia", interval, "min")
-		a.saveLostModeState(persistedLostMode{Active: true, IntervalMin: interval})
+		c := a.getLostModeCascade()
+		a.saveLostModeState(persistedLostMode{
+			Active:         true,
+			IntervalMin:    interval,
+			AutoLock:       c.AutoLock,
+			LockDelayMin:   c.LockDelayMin,
+			NoHibernate:    c.NoHibernate,
+			WebcamOverride: c.WebcamOverride,
+			Alarm:          c.Alarm,
+		})
 		return
 	}
 
@@ -254,6 +302,16 @@ func (a *Agent) ResumeLostMode() {
 	lostModeMu.Lock()
 	lostModeActive = true
 	lostModeIntervalMin = interval
+	// Feature 038: se restaura también la cascada, para poder REVERTIR las
+	// contramedidas (p. ej. la no-hibernación) cuando el equipo se recupere,
+	// aunque de por medio haya habido un reinicio.
+	lostModeCascadeVal = lostModeCascade{
+		AutoLock:       st.AutoLock,
+		LockDelayMin:   st.LockDelayMin,
+		NoHibernate:    st.NoHibernate,
+		WebcamOverride: st.WebcamOverride,
+		Alarm:          st.Alarm,
+	}
 	lostModeMu.Unlock()
 
 	a.Logger.Infoln("ResumeLostMode: el equipo seguía marcado como PERDIDO, cadencia", interval, "min")

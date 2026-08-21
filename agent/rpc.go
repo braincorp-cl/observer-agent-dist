@@ -727,6 +727,19 @@ func (a *Agent) RunRPC() {
 				// puede leer, SetLostMode aplica el default y su tope.
 				intervalMin, _ := strconv.Atoi(p.Data["interval_min"])
 
+				// Feature 038: la cascada resuelta viaja en el mismo push (claves
+				// aditivas; un servidor viejo no las manda y quedan en su cero). Se
+				// fija ANTES de SetLostMode para que la persistencia la incluya y el
+				// bucle la aplique al cruzar la transición.
+				lockDelayMin, _ := strconv.Atoi(p.Data["lock_delay_min"])
+				a.setLostModeCascade(lostModeCascade{
+					AutoLock:       natsBoolFlag(p.Data["auto_lock"]),
+					LockDelayMin:   lockDelayMin,
+					NoHibernate:    natsBoolFlag(p.Data["no_hibernate"]),
+					WebcamOverride: natsBoolFlag(p.Data["webcam_override"]),
+					Alarm:          natsBoolFlag(p.Data["alarm"]),
+				})
+
 				a.SetLostMode(natsBoolFlag(p.Data["active"]), intervalMin)
 
 				// Siempre ok: el estado ya quedó fijado en memoria y un fallo de

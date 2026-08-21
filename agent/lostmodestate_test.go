@@ -27,6 +27,7 @@ func agenteDePrueba(t *testing.T) *Agent {
 	lostModeMu.Lock()
 	lostModeActive = false
 	lostModeIntervalMin = lostModeDefaultIntervalMin
+	lostModeCascadeVal = lostModeCascade{}
 	lostModeMu.Unlock()
 
 	t.Cleanup(func() {
@@ -34,6 +35,7 @@ func agenteDePrueba(t *testing.T) *Agent {
 		lostModeMu.Lock()
 		lostModeActive = false
 		lostModeIntervalMin = lostModeDefaultIntervalMin
+		lostModeCascadeVal = lostModeCascade{}
 		lostModeMu.Unlock()
 	})
 
@@ -310,5 +312,62 @@ func TestElAvisoNoBloqueaAunqueNadieEscuche(t *testing.T) {
 	case <-hecho:
 	case <-time.After(3 * time.Second):
 		t.Fatal("SetLostMode quedó bloqueado esperando que alguien leyera el aviso")
+	}
+}
+
+// TestCascadaSobreviveAlReinicio (feature 038): la cascada persiste junto al
+// estado, para poder REVERTIR las contramedidas —p. ej. la no-hibernación— al
+// recuperar el equipo aunque de por medio haya habido un reinicio.
+func TestCascadaSobreviveAlReinicio(t *testing.T) {
+	a := agenteDePrueba(t)
+
+	a.setLostModeCascade(lostModeCascade{
+		AutoLock:       true,
+		LockDelayMin:   0,
+		NoHibernate:    true,
+		WebcamOverride: true,
+		Alarm:          false,
+	})
+	a.SetLostMode(true, 15)
+
+	// Reinicio: se borra TODO el estado en memoria, incluida la cascada.
+	lostModeMu.Lock()
+	lostModeActive = false
+	lostModeIntervalMin = lostModeDefaultIntervalMin
+	lostModeCascadeVal = lostModeCascade{}
+	lostModeMu.Unlock()
+
+	a.ResumeLostMode()
+
+	c := a.getLostModeCascade()
+	if !c.AutoLock || !c.NoHibernate || !c.WebcamOverride || c.Alarm {
+		t.Errorf("la cascada no se restauró tras el reinicio: %+v", c)
+	}
+	if c.LockDelayMin != 0 {
+		t.Errorf("LockDelayMin tras el reinicio = %d, se esperaba 0", c.LockDelayMin)
+	}
+}
+
+// TestRecuperarLimpiaLaCascada: al recuperar, el archivo de estado se borra, así
+// que un ResumeLostMode posterior no rearma ninguna cascada (no queda rastro).
+func TestRecuperarLimpiaLaCascada(t *testing.T) {
+	a := agenteDePrueba(t)
+
+	a.setLostModeCascade(lostModeCascade{NoHibernate: true})
+	a.SetLostMode(true, 5)
+	a.SetLostMode(false, 0)
+
+	// Reinicio y resume: no debe haber estado que restaurar.
+	lostModeMu.Lock()
+	lostModeCascadeVal = lostModeCascade{}
+	lostModeMu.Unlock()
+
+	a.ResumeLostMode()
+
+	if activo, _ := a.getLostMode(); activo {
+		t.Fatal("tras recuperar y reiniciar el equipo volvió a estar perdido")
+	}
+	if c := a.getLostModeCascade(); c.NoHibernate {
+		t.Errorf("la cascada sobrevivió a la recuperación: %+v", c)
 	}
 }

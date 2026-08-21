@@ -57,6 +57,14 @@ type AgentCheckInConfig struct {
 	// cualitativamente más sensible que ubicar un activo (ADR-025), así que
 	// actualizar el producto NO puede empezar a hacerlo solo.
 	LostModeWebcam bool `json:"lost_mode_webcam"`
+	// Feature 038: cascada RESUELTA (incidente > equipo > global) que el servidor
+	// entrega también por este canal de respaldo. Aditiva: un servidor viejo no
+	// las manda y el agente ve los ceros, que es "sin contramedidas".
+	LostModeAutoLock       bool `json:"lost_mode_auto_lock"`
+	LostModeLockDelayMin   int  `json:"lost_mode_lock_delay_min"`
+	LostModeNoHibernate    bool `json:"lost_mode_no_hibernate"`
+	LostModeWebcamOverride bool `json:"lost_mode_webcam_override"`
+	LostModeAlarm          bool `json:"lost_mode_alarm"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
@@ -88,6 +96,15 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// o el próximo tick de config — que en un equipo que ya no vuelve a la red
 	// puede no llegar nunca.
 	a.ResumeLostMode()
+
+	// Feature 038: si el equipo arranca todavía marcado como perdido (se reinició
+	// con el caso abierto), se avisa al bucle para que RE-APLIQUE las contramedidas
+	// de la cascada. La no-hibernación es idempotente (no re-duplica el esquema si
+	// ya lo hizo), y el bloqueo diferido se re-agenda: un equipo aún perdido debe
+	// volver a bloquearse tras el reinicio.
+	if activo, _ := a.getLostMode(); activo {
+		signalLostModeChanged()
+	}
 
 	// Feature 030 · Fase 2 · T016b/T016c. Va acá, en el arranque del servicio,
 	// porque los dos momentos en que hay que pedir permisos de macOS terminan
@@ -141,6 +158,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// portátil recién encendido) todos los campos son ceros, y ese `lost_mode=false`
 	// apagaría el estado que ResumeLostMode acaba de restaurar desde el disco.
 	if conf.fromServer {
+		// Feature 038: la cascada se fija ANTES de SetLostMode para que la
+		// persistencia del estado la incluya y el bucle la aplique al transicionar.
+		a.setLostModeCascade(cascadeDeConfig(conf))
 		a.SetLostMode(conf.LostMode, conf.LostModeIntervalMin)
 	}
 	// El interruptor de webcam NO se aplica acá aunque el dato ya esté: se escribe
@@ -291,7 +311,16 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// variable, el ciclo que arranca justo cuando alguien marca el equipo saldría
 	// con el interruptor en el cero del struct y perdería la única foto que se toma
 	// al entrar al modo perdido — la del momento del marcaje, que es la más valiosa.
-	webcamSeg := conf.LostModeWebcam
+	// Feature 038: la webcam efectiva en modo perdido es el interruptor global O
+	// el override del caso. El override enciende la foto para ese caso aunque
+	// el global esté apagado ("override total en perdido", 2026-08-20); queda
+	// auditado en el marcaje. Fuera del modo perdido este valor no se usa.
+	webcamSeg := conf.LostModeWebcam || conf.LostModeWebcamOverride
+
+	// Feature 038: estado anterior del modo perdido, para disparar las
+	// contramedidas de la cascada UNA sola vez por cruce (entrar/salir) y no en
+	// cada tick. El aviso `lostModeChanged` llega en las dos transiciones.
+	perdidoAnterior := false
 
 	for {
 		select {
@@ -328,6 +357,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// leer ese `lost_mode=false` como "ya no está perdido" apagaría la
 			// captura justo cuando el equipo perdió contacto.
 			if geoConf.fromServer {
+				a.setLostModeCascade(cascadeDeConfig(geoConf))
 				a.SetLostMode(geoConf.LostMode, geoConf.LostModeIntervalMin)
 			}
 
@@ -337,7 +367,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				// Mismo resguardo que el resto: con el repliegue todos los campos son
 				// ceros, y leer ese `false` apagaría la webcam de un caso en curso por
 				// una caída de red en vez de por una decisión de alguien.
-				webcamSeg = geoConf.LostModeWebcam
+				webcamSeg = geoConf.LostModeWebcam || geoConf.LostModeWebcamOverride
 			}
 
 			// Si el intervalo vigente cambió, se re-arma. Cubre el caso del arranque
@@ -390,6 +420,18 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		case <-lostModeChanged:
 			perdido, perdidoIntervaloMin := a.getLostMode()
 
+			// Feature 038: al cruzar una transición se aplican o revierten las
+			// contramedidas de la cascada (bloqueo diferido, no-hibernación). Sólo
+			// en el cruce: entrar dos veces no re-agenda ni re-duplica nada.
+			if perdido != perdidoAnterior {
+				perdidoAnterior = perdido
+				if perdido {
+					a.aplicarContramedidasModoPerdido()
+				} else {
+					a.revertirContramedidasModoPerdido()
+				}
+			}
+
 			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geoConfSeg); nuevo != geoInterval {
 				a.Logger.Debugf("geo: intervalo %ds -> %ds por aviso de modo perdido (%v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
@@ -405,7 +447,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// El force-on va encendido por la misma razón que en el tick: en Windows
 			// 11 24H2 el escaneo de BSSIDs exige la ubicación del sistema activada.
 			if perdido {
-				lanzarCapturaGeo(true, true, webcamSeg)
+				// El override puede haber llegado por el push (aún no reflejado en
+				// webcamSeg, que se refresca en el tick de config): se considera acá.
+				lanzarCapturaGeo(true, true, webcamSeg || a.getLostModeCascade().WebcamOverride)
 			}
 		case <-syncMeshTicker.C:
 			if syncMeshRunning.CompareAndSwap(false, true) {
