@@ -1,14 +1,14 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package agent
 
-// Feature 038 · no-hibernación en no-Windows.
+// Feature 038 · no-hibernación en los SO que aún no la implementan.
 //
-// Fase A1 es sólo Windows (donde vive el caso del portátil que se duerme con la
-// tapa cerrada). macOS (`caffeinate`/`pmset`) y Linux (`systemd-inhibit`) son
-// Fase A2 (T010/T011). Hasta entonces estas son no-ops, igual que el stub de
-// DisableSleepHibernate en install_unix.go: el resto de la cascada —bloqueo
-// diferido, override de webcam, geo intensiva— sí opera en los tres SO.
+// Windows (T007, `lostmode_power_windows.go`) y Linux (T011,
+// `lostmode_power_linux.go`) ya tienen no-suspensión reversible. macOS
+// (`caffeinate`/`pmset`) es T010 y sigue pendiente, así que acá son no-ops: el
+// resto de la cascada —bloqueo diferido, override de webcam, geo intensiva y la
+// alarma— sí opera igual en macOS.
 
 func (a *Agent) aplicarNoHibernacion()  {}
 func (a *Agent) revertirNoHibernacion() {}

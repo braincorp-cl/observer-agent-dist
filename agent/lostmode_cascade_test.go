@@ -23,7 +23,18 @@ func alarmaSonando() bool {
 	return runningAlarm.stop != nil
 }
 
+// contramedidasSincronas corre las contramedidas en línea (no en goroutine) para
+// que la prueba sea determinista y no deje goroutines tocando estado global
+// entre tests (el detector de carreras lo exige).
+func contramedidasSincronas(t *testing.T) {
+	t.Helper()
+	prev := lostModeEnSegundoPlano
+	lostModeEnSegundoPlano = false
+	t.Cleanup(func() { lostModeEnSegundoPlano = prev })
+}
+
 func TestCascadaConAlarmaHaceSonarLaAlarma(t *testing.T) {
+	contramedidasSincronas(t)
 	a := testAgent()
 	sustituirSpawner(t, func(*Agent, context.Context) (*alarmPlayer, error) {
 		return fakeAlarmPlayer(), nil
@@ -46,6 +57,7 @@ func TestCascadaConAlarmaHaceSonarLaAlarma(t *testing.T) {
 }
 
 func TestCascadaSinAlarmaNoHaceSonarNada(t *testing.T) {
+	contramedidasSincronas(t)
 	a := testAgent()
 	sustituirSpawner(t, func(*Agent, context.Context) (*alarmPlayer, error) {
 		return fakeAlarmPlayer(), nil

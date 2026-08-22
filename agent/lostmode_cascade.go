@@ -27,7 +27,24 @@ import (
 var (
 	lostLockMu     sync.Mutex
 	lostLockCancel chan struct{}
+
+	// lostModeEnSegundoPlano decide si las contramedidas pesadas (alarma,
+	// no-hibernación/-suspensión) corren en goroutine. En producción es true para
+	// no bloquear el bucle del servicio en la transición; las pruebas lo ponen en
+	// false para que la ejecución sea síncrona y no queden goroutines tocando
+	// estado global entre tests.
+	lostModeEnSegundoPlano = true
 )
+
+// enSegundoPlano corre f en goroutine (producción) o en línea (tests), según
+// lostModeEnSegundoPlano.
+func enSegundoPlano(f func()) {
+	if lostModeEnSegundoPlano {
+		go f()
+	} else {
+		f()
+	}
+}
 
 // cascadeDeConfig arma la cascada resuelta a partir del config del polling.
 // El push (rpc.go) la arma a mano desde su payload de texto.
@@ -54,10 +71,10 @@ func (a *Agent) aplicarContramedidasModoPerdido() {
 		a.agendarBloqueoModoPerdido(c.LockDelayMin)
 	}
 	if c.NoHibernate {
-		go a.aplicarNoHibernacion()
+		enSegundoPlano(a.aplicarNoHibernacion)
 	}
 	if c.Alarm {
-		go a.dispararAlarmaModoPerdido()
+		enSegundoPlano(a.dispararAlarmaModoPerdido)
 	}
 }
 
@@ -88,8 +105,8 @@ func (a *Agent) revertirContramedidasModoPerdido() {
 	// recuperar un equipo = caso cerrado = silencio. StopAlarm es idempotente
 	// (no-op si no hay alarma) y restaura el volumen previo + limpia el estado
 	// persistido de la alarma eterna.
-	go a.StopAlarm()
-	go a.revertirNoHibernacion()
+	enSegundoPlano(a.StopAlarm)
+	enSegundoPlano(a.revertirNoHibernacion)
 }
 
 // agendarBloqueoModoPerdido programa el bloqueo de sesión para dentro de
