@@ -16,8 +16,13 @@ import (
 // Qué NO vive acá:
 //   - La geo intensiva y la captura de pantalla/webcam: ya las hace el ciclo del
 //     modo perdido (feature 030). El override de webcam se resuelve en svc.go.
-//   - La alarma: es opt-in y, cuando la cascada la trae encendida, suena por el
-//     canal de la 028 desde el ciclo de captura, no desde acá.
+//
+// Qué SÍ vive acá:
+//   - La alarma antirrobo (RF-06): es opt-in en la cascada y, cuando la trae
+//     encendida, se dispara desde este archivo con la primitiva de la 028
+//     (PlayAlarm), NO desde el ciclo de captura. Antes del 2026-08-22 el flag
+//     `Alarm` viajaba y se persistía pero nadie lo tocaba, así que un equipo
+//     perdido con la alarma habilitada nunca sonaba; ese era el gap RF-06.
 
 var (
 	lostLockMu     sync.Mutex
@@ -51,6 +56,25 @@ func (a *Agent) aplicarContramedidasModoPerdido() {
 	if c.NoHibernate {
 		go a.aplicarNoHibernacion()
 	}
+	if c.Alarm {
+		go a.dispararAlarmaModoPerdido()
+	}
+}
+
+// dispararAlarmaModoPerdido hace sonar la alarma antirrobo como parte de la
+// cascada (RF-06). A diferencia del camino manual de la 028 —donde el operador
+// elige duración y volumen— acá ambos se fijan sin opción: volumen SIEMPRE al
+// máximo y alarma ETERNA. Es una decisión del usuario del 2026-08-22: la alarma
+// en modo perdido es de las últimas acciones de un caso de robo, no una molestia
+// acotada, así que no se deja a criterio del caso. El máximo se reafirma solo
+// cada segundo dentro de PlayAlarm; la eterna sobrevive a un reinicio (ver
+// alarmstate.go). Se silencia al recuperar —StopAlarm en la reversa restaura el
+// volumen previo y limpia el estado persistido—.
+func (a *Agent) dispararAlarmaModoPerdido() {
+	a.Logger.Infoln("modo perdido: disparando alarma antirrobo (volumen máximo, sin límite de tiempo)")
+	if err := a.PlayAlarm(AlarmOptions{Forever: true, MaxVolume: true}); err != nil {
+		a.Logger.Errorln("modo perdido PlayAlarm:", err.Error())
+	}
 }
 
 // revertirContramedidasModoPerdido corre al RECUPERAR. Cancela el bloqueo
@@ -58,6 +82,13 @@ func (a *Agent) aplicarContramedidasModoPerdido() {
 // y restaura el esquema de energía previo.
 func (a *Agent) revertirContramedidasModoPerdido() {
 	a.cancelarBloqueoModoPerdido()
+	// StopAlarm es incondicional a propósito: al recuperar el equipo, en memoria
+	// la cascada ya se resolvió a "no perdido" (Alarm=false), así que no se puede
+	// consultar el flag para saber si la cascada la había encendido. Y da igual:
+	// recuperar un equipo = caso cerrado = silencio. StopAlarm es idempotente
+	// (no-op si no hay alarma) y restaura el volumen previo + limpia el estado
+	// persistido de la alarma eterna.
+	go a.StopAlarm()
 	go a.revertirNoHibernacion()
 }
 
