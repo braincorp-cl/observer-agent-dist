@@ -63,6 +63,12 @@ var (
 	// Windows (aplicar/revertir sólo se protegen por existencia de archivo, no
 	// por mutex). El cerrojo vuelve atómico el read-compute-apply.
 	noHibernacionMu sync.Mutex
+
+	// noHibernacionUltimoDeseado recuerda el último estado deseado de la no-dormir
+	// reactiva para loguear la FUENTE (RF-11 / T019) SÓLO en las transiciones, no
+	// en cada poll: la reconciliación corre en cada pasada y sería ruido. nil = aún
+	// desconocido (primer arranque del proceso). Va bajo noHibernacionMu.
+	noHibernacionUltimoDeseado *bool
 )
 
 func (a *Agent) setOutsideGeofence(v bool) {
@@ -93,11 +99,48 @@ func (a *Agent) reconciliarNoHibernacion() {
 	defer noHibernacionMu.Unlock()
 
 	activo, _ := a.getLostMode()
-	if noHibernacionDeseada(activo, a.getLostModeCascade().NoHibernate, a.getOutsideGeofence()) {
+	lostNoHib := a.getLostModeCascade().NoHibernate
+	lostPide := activo && lostNoHib
+	geoPide := a.getOutsideGeofence()
+	deseado := noHibernacionDeseada(activo, lostNoHib, geoPide)
+
+	// RF-11 / T019 · logging por fuente. Se emite sólo al cambiar el estado
+	// deseado —no en cada poll— para que el log distinga la fuente (geofence /
+	// lost_mode) en el apply y en el revert sin inundar la bitácora. El apply/
+	// revert por-SO ya loguea el MECANISMO (inhibidor systemd, esquema powercfg);
+	// esta línea agrega la ATRIBUCIÓN de origen que pide RF-11.
+	if noHibernacionUltimoDeseado == nil || *noHibernacionUltimoDeseado != deseado {
+		if deseado {
+			a.Logger.Infoln("no-dormir reactivo: aplicar (fuente:", fuentesNoHibernacion(lostPide, geoPide)+")")
+		} else {
+			a.Logger.Infoln("no-dormir reactivo: revertir (ninguna fuente reactiva la pide)")
+		}
+		d := deseado
+		noHibernacionUltimoDeseado = &d
+	}
+
+	if deseado {
 		a.aplicarNoHibernacion()
 		return
 	}
 	a.revertirNoHibernacion()
+}
+
+// fuentesNoHibernacion arma la etiqueta de origen para el log de RF-11: qué
+// fuente(s) reactiva(s) sostienen la no-dormir en este instante. El baseline
+// persistente NO aparece acá —lo loguea baseline.go con su propia etiqueta—
+// porque no pasa por esta reconciliación.
+func fuentesNoHibernacion(lost, geo bool) string {
+	switch {
+	case lost && geo:
+		return "lost_mode+geofence"
+	case lost:
+		return "lost_mode"
+	case geo:
+		return "geofence"
+	default:
+		return "ninguna"
+	}
 }
 
 // noHibernacionDeseada es el predicado puro de la reconciliación: el estado

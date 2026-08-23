@@ -144,7 +144,7 @@ func (a *Agent) reconciliarBaseline(enabled bool) {
 			a.Logger.Errorln("baseline: aplicado pero no se pudo persistir el estado:", err.Error())
 			return
 		}
-		a.Logger.Infoln("baseline keep-awake aplicado")
+		a.Logger.Infoln("baseline keep-awake aplicado (fuente: baseline)") // RF-11 / T019
 
 	case !enabled && aplicado:
 		st, _ := a.loadBaselineState()
@@ -153,6 +153,6 @@ func (a *Agent) reconciliarBaseline(enabled bool) {
 			return
 		}
 		a.clearBaselineState()
-		a.Logger.Infoln("baseline keep-awake revertido")
+		a.Logger.Infoln("baseline keep-awake revertido (fuente: baseline)") // RF-11 / T019
 	}
 }
