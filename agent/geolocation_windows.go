@@ -39,7 +39,12 @@ var winPctRe = regexp.MustCompile(`(\d{1,3})\s*%`)
 var winChannelRe = regexp.MustCompile(`(?i)(?:channel|canal)\D+(\d+)`)
 
 func osLocation(a *Agent) (Location, error) {
-	if a.GeoForceOn {
+	// Feature 041: fuera de geocerca se fuerza la radio WiFi encendida aunque el
+	// force-on GLOBAL (geo_force_on) esté apagado —para que la localización por WiFi
+	// no degrade a IP mientras el equipo está fuera del sitio—. forceLocationOn es
+	// transitorio (netsh admin=enabled): NO toca el power-management persistente de
+	// la NIC, así que no deja secuela tras revertir la geocerca.
+	if a.GeoForceOn || a.getOutsideGeofence() {
 		forceLocationOn(a)
 	}
 	aps := scanWifiBSSIDs(a)

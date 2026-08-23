@@ -225,7 +225,7 @@ func TestGeoTickIntervalEnModoPerdido(t *testing.T) {
 
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
-			got := geoTickIntervalFor(c.perdido, c.intervaloMin, c.desdeConf)
+			got := geoTickIntervalFor(c.perdido, c.intervaloMin, false, 0, c.desdeConf)
 			if got != c.quiero {
 				t.Errorf("geoTickIntervalFor(%v, %d, %d) = %d, se esperaba %d",
 					c.perdido, c.intervaloMin, c.desdeConf, got, c.quiero)
@@ -239,7 +239,7 @@ func TestGeoTickIntervalEnModoPerdido(t *testing.T) {
 // alta frecuencia que mataría la batería y delataría al agente.
 func TestModoPerdidoNoBajaDelMinutoEnElTicker(t *testing.T) {
 	for _, min := range []int{-100, -1, 0, 1} {
-		if got := geoTickIntervalFor(true, min, 1800); got < lostModeMinIntervalMin*60 {
+		if got := geoTickIntervalFor(true, min, false, 0, 1800); got < lostModeMinIntervalMin*60 {
 			t.Errorf("con intervalo %d el ticker quedó en %ds, por debajo del mínimo de %ds",
 				min, got, lostModeMinIntervalMin*60)
 		}

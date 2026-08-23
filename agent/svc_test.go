@@ -35,6 +35,56 @@ func TestGeoTickIntervalPiso(t *testing.T) {
 	}
 }
 
+// TestGeoTickIntervalGeocerca congela la generalización de la feature 041: el
+// ticker corre al MÍNIMO de las cadencias apretadas activas. La geocerca aprieta
+// la cadencia CON el piso de 300 s (no es un caso de robo), y cuando conviven
+// modo perdido y geocerca gana la menor.
+func TestGeoTickIntervalGeocerca(t *testing.T) {
+	casos := []struct {
+		nombre      string
+		perdido     bool
+		perdidoMin  int
+		fuera       bool
+		geocercaMin int
+		desdeConf   int
+		quiero      int
+	}{
+		{"sin nada apretado queda la normal", false, 0, false, 0, 1800, 1800},
+		{"geocerca 5 min coincide con el piso", false, 0, true, 5, 1800, 300},
+		{"geocerca 10 min aprieta a 600", false, 0, true, 10, 1800, 600},
+		// A diferencia del modo perdido, la geocerca NO saltea el piso de 300 s.
+		{"geocerca 1 min RESPETA el piso de 300 s", false, 0, true, 1, 1800, 300},
+		{"geocerca ausente cae al default de 5 min", false, 0, true, 0, 1800, 300},
+		// La geocerca nunca AFLOJA por encima de la normal: gana el mínimo.
+		{"geocerca más floja que la normal no la afloja", false, 0, true, 120, 1800, 1800},
+		// Conviven modo perdido y geocerca: gana la menor.
+		{"perdido 1 min gana sobre geocerca 5 min", true, 1, true, 5, 1800, 60},
+		{"geocerca 5 min gana sobre perdido 15 min", true, 15, true, 5, 1800, 300},
+	}
+
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			got := geoTickIntervalFor(c.perdido, c.perdidoMin, c.fuera, c.geocercaMin, c.desdeConf)
+			if got != c.quiero {
+				t.Errorf("geoTickIntervalFor(perdido=%v,%d, fuera=%v,%d, conf=%d) = %d, se esperaba %d",
+					c.perdido, c.perdidoMin, c.fuera, c.geocercaMin, c.desdeConf, got, c.quiero)
+			}
+		})
+	}
+}
+
+// TestGeofenceNoBajaDelPiso es la salvaguarda de privacidad de la geocerca: por
+// más apretada que venga la cadencia, nunca baja del piso de 300 s (esa es la
+// diferencia con el modo perdido, que sí lo saltea).
+func TestGeofenceNoBajaDelPiso(t *testing.T) {
+	for _, min := range []int{-10, 0, 1, 4, 5} {
+		if got := geoTickIntervalFor(false, 0, true, min, 1800); got < geoMinInterval {
+			t.Errorf("geocerca a %d min dejó el ticker en %ds, por debajo del piso de %ds",
+				min, got, geoMinInterval)
+		}
+	}
+}
+
 // TestRepliegueApagaLaGeoPeroNoLaEntierra es el test que habría atrapado el bug.
 //
 // El repliegue se usa cuando el agente no pudo leer la config del servidor, que en

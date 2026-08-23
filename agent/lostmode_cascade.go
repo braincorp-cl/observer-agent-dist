@@ -46,6 +46,62 @@ func enSegundoPlano(f func()) {
 	}
 }
 
+// Feature 041 · estado "fuera de geocerca" en memoria. Es la SEGUNDA fuente de la
+// no-hibernación (la primera es la cascada del modo perdido). Va en variable de
+// paquete con su propio mutex, igual que el estado del modo perdido y por el mismo
+// motivo (un mutex dentro de Agent lo volvería no copiable; hay un solo agente por
+// proceso). Lo escribe el bucle de poll (T015) y lo leen, desde otras goroutines,
+// la reconciliación de no-dormir (acá) y el gate de forceLocationOn (osLocation).
+var (
+	outsideGeofenceMu  sync.RWMutex
+	outsideGeofenceVal bool
+)
+
+func (a *Agent) setOutsideGeofence(v bool) {
+	outsideGeofenceMu.Lock()
+	outsideGeofenceVal = v
+	outsideGeofenceMu.Unlock()
+}
+
+func (a *Agent) getOutsideGeofence() bool {
+	outsideGeofenceMu.RLock()
+	defer outsideGeofenceMu.RUnlock()
+	return outsideGeofenceVal
+}
+
+// reconciliarNoHibernacion recomputa el estado DESEADO de no-dormir a partir de
+// TODAS sus fuentes y lo aplica de forma idempotente:
+//
+//	deseado = (modo perdido activo Y la cascada pide no-hibernar) OR (fuera de geocerca)
+//
+// RN-03 (invariante multi-fuente): la no-hibernación sólo se REVIERTE cuando
+// NINGUNA fuente la pide. Recuperar el equipo de "perdido" estando aún fuera de la
+// geocerca MANTIENE el equipo despierto; sólo al desaparecer las dos fuentes se
+// restaura el esquema de energía. `aplicarNoHibernacion`/`revertirNoHibernacion`
+// ya son idempotentes (guardan estado en disco), así que llamarlo por poll o por
+// transición no encadena copias ni re-duplica el inhibidor.
+func (a *Agent) reconciliarNoHibernacion() {
+	activo, _ := a.getLostMode()
+	if noHibernacionDeseada(activo, a.getLostModeCascade().NoHibernate, a.getOutsideGeofence()) {
+		a.aplicarNoHibernacion()
+		return
+	}
+	a.revertirNoHibernacion()
+}
+
+// noHibernacionDeseada es el predicado puro de la reconciliación: el estado
+// deseado de no-dormir dado el estado de sus dos fuentes. Se extrae de la acción
+// (aplicar/revertir toca el SO) para poder congelar la invariante RN-03 como una
+// tabla de verdad, sin systemd ni powercfg de por medio:
+//
+//	deseado = (perdido Y la cascada pide no-hibernar) OR (fuera de geocerca)
+//
+// La consecuencia clave —recuperar de "perdido" estando aún fuera MANTIENE el
+// equipo despierto— es la fila (lostActivo=false, outsideGeofence=true) ⇒ true.
+func noHibernacionDeseada(lostActivo, lostNoHibernate, outsideGeofence bool) bool {
+	return (lostActivo && lostNoHibernate) || outsideGeofence
+}
+
 // cascadeDeConfig arma la cascada resuelta a partir del config del polling.
 // El push (rpc.go) la arma a mano desde su payload de texto.
 func cascadeDeConfig(c AgentCheckInConfig) lostModeCascade {
@@ -70,9 +126,11 @@ func (a *Agent) aplicarContramedidasModoPerdido() {
 	if c.AutoLock {
 		a.agendarBloqueoModoPerdido(c.LockDelayMin)
 	}
-	if c.NoHibernate {
-		enSegundoPlano(a.aplicarNoHibernacion)
-	}
+	// Feature 041: la no-hibernación es multi-fuente (modo perdido OR geocerca), así
+	// que se resuelve por reconciliación en vez de aplicarse a secas. Entrar en modo
+	// perdido con la cascada pidiéndola la aplica; si además el equipo ya estaba
+	// despierto por geocerca, la reconciliación es idempotente y no la re-duplica.
+	enSegundoPlano(a.reconciliarNoHibernacion)
 	if c.Alarm {
 		enSegundoPlano(a.dispararAlarmaModoPerdido)
 	}
@@ -106,7 +164,12 @@ func (a *Agent) revertirContramedidasModoPerdido() {
 	// (no-op si no hay alarma) y restaura el volumen previo + limpia el estado
 	// persistido de la alarma eterna.
 	enSegundoPlano(a.StopAlarm)
-	enSegundoPlano(a.revertirNoHibernacion)
+	// Feature 041 · RN-03: NO se revierte a secas. Si el equipo sigue fuera de la
+	// geocerca, recuperarlo de "perdido" debe MANTENERLO despierto; la reconciliación
+	// revierte sólo cuando ninguna fuente pide no-dormir. En este punto el estado de
+	// modo perdido ya se resolvió a "no perdido" (SetLostMode corrió antes de avisar
+	// al bucle), así que la reconciliación lee la geocerca como única fuente posible.
+	enSegundoPlano(a.reconciliarNoHibernacion)
 }
 
 // agendarBloqueoModoPerdido programa el bloqueo de sesión para dentro de

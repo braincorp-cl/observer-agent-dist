@@ -31,7 +31,11 @@ import (
 var macRe = regexp.MustCompile(`([0-9A-Fa-f]{2}(?:\\?:)){5}[0-9A-Fa-f]{2}`)
 
 func osLocation(a *Agent) (Location, error) {
-	if a.GeoForceOn {
+	// Feature 041: fuera de geocerca se fuerza la radio WiFi encendida aunque el
+	// force-on GLOBAL (geo_force_on) esté apagado. forceLocationOn en Linux es
+	// transitorio (rfkill unblock / nmcli radio on): NO toca power-management
+	// persistente de la NIC, así que no deja secuela al revertir la geocerca.
+	if a.GeoForceOn || a.getOutsideGeofence() {
 		forceLocationOn(a)
 	}
 	return a.resolveWifiLocation(scanWifiBSSIDs(a))

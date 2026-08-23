@@ -56,6 +56,67 @@ func TestCascadaConAlarmaHaceSonarLaAlarma(t *testing.T) {
 	}
 }
 
+// TestNoHibernacionDeseadaRN03 congela la invariante multi-fuente de la feature
+// 041 como tabla de verdad. La no-dormir la piden DOS fuentes independientes —la
+// cascada del modo perdido y la geocerca— y sólo se apaga cuando NINGUNA la pide.
+//
+// La fila que importa (RN-03): recuperar el equipo de "perdido" estando AÚN fuera
+// de la geocerca deja lostActivo=false pero outsideGeofence=true, y el deseado
+// sigue siendo true → el equipo se mantiene despierto. Sólo con las dos fuentes en
+// false se revierte.
+func TestNoHibernacionDeseadaRN03(t *testing.T) {
+	casos := []struct {
+		nombre        string
+		lostActivo    bool
+		lostNoHib     bool
+		fueraGeocerca bool
+		quiero        bool
+	}{
+		{"nada activo: se revierte", false, false, false, false},
+		{"sólo perdido con no-hibernar", true, true, false, true},
+		{"perdido sin no-hibernar en la cascada", true, false, false, false},
+		{"sólo geocerca", false, false, true, true},
+		{"RN-03: recuperado pero AÚN fuera mantiene despierto", false, true, true, true},
+		{"perdido no-hibernar Y geocerca", true, true, true, true},
+		// Perdido sin no-hibernar pero fuera de geocerca: la geocerca lo sostiene.
+		{"geocerca sostiene aunque la cascada no pida", true, false, true, true},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			got := noHibernacionDeseada(c.lostActivo, c.lostNoHib, c.fueraGeocerca)
+			if got != c.quiero {
+				t.Errorf("noHibernacionDeseada(%v,%v,%v) = %v, se esperaba %v",
+					c.lostActivo, c.lostNoHib, c.fueraGeocerca, got, c.quiero)
+			}
+		})
+	}
+}
+
+// TestDentroDelRadioNoActivaContramedidaReactiva es el caso negativo A002 (audit
+// clarify ronda 4): dentro del radio y sin modo perdido, NADA reactivo se activa.
+//
+// El agente NO tiene un disparador por "tapa cerrada" ni por "cargador
+// desconectado" (decisión 030: esos eventos nunca escalan). La única señal
+// reactiva es outside_geofence, y con ella en false —más el modo perdido apagado—
+// el estado deseado de no-dormir es false: ni no-dormir por geocerca, ni WiFi
+// forzada, ni cadencia apretada. (Que el equipo pueda quedar despierto por el
+// BASELINE keep-awake es otra cosa, y lo cubren T025/T026.)
+func TestDentroDelRadioNoActivaContramedidaReactiva(t *testing.T) {
+	a := testAgent()
+	a.setOutsideGeofence(false)
+	t.Cleanup(func() { a.setOutsideGeofence(false) })
+
+	// Sin modo perdido y dentro del radio: ninguna fuente reactiva pide no-dormir.
+	if noHibernacionDeseada(false, false, a.getOutsideGeofence()) {
+		t.Error("dentro del radio y sin modo perdido no debe pedirse no-dormir reactivo")
+	}
+	// El gate de forceLocationOn (WiFi forzada) cuelga de las mismas fuentes: sin
+	// force-on global ni geocerca, no se fuerza la radio.
+	if a.GeoForceOn || a.getOutsideGeofence() {
+		t.Error("dentro del radio no debe forzarse la radio WiFi")
+	}
+}
+
 func TestCascadaSinAlarmaNoHaceSonarNada(t *testing.T) {
 	contramedidasSincronas(t)
 	a := testAgent()

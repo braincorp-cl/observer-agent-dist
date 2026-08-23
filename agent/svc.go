@@ -16,6 +16,11 @@ import (
 // convertiría la flota en un rastreador.
 const geoMinInterval = 300
 
+// geofenceDefaultIntervalMin es la cadencia de geo apretada por defecto cuando el
+// equipo está fuera de geocerca y el servidor no mandó un valor (feature 041).
+// Coincide con el default de CoreSettings.geo_geofence_interval_min en el servidor.
+const geofenceDefaultIntervalMin = 5
+
 func (a *Agent) RunAsService(nc *nats.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -249,7 +254,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// estado venía a evitar: un equipo robado se reinicia, y el reinicio no puede
 	// costar una ventana ciega en cada arranque.
 	perdidoAlArrancar, intervaloAlArrancar := a.getLostMode()
-	geoInterval := geoTickIntervalFor(perdidoAlArrancar, intervaloAlArrancar, conf.Geo)
+	// Feature 041: la cadencia de geocerca se cablea en T015 (Integração); acá
+	// pasa neutra (false, 0) para no cambiar el comportamiento del arranque.
+	geoInterval := geoTickIntervalFor(perdidoAlArrancar, intervaloAlArrancar, false, 0, conf.Geo)
 	a.Logger.Debugf("geo: ticker inicial %ds (modo perdido: %v)", geoInterval, perdidoAlArrancar)
 	checkInGeoTicker := time.NewTicker(time.Duration(geoInterval) * time.Second)
 
@@ -382,7 +389,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// sin red, que dejaba puesto el intervalo del repliegue en vez del real,
 			// y ahora también las dos transiciones del modo perdido: el ticker nunca
 			// se detiene, así que entrar y salir del modo no necesita más código.
-			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geoConf.Geo); nuevo != geoInterval {
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, false, 0, geoConf.Geo); nuevo != geoInterval {
 				a.Logger.Debugf("geo: intervalo %ds -> %ds (modo perdido: %v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
 				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
@@ -440,7 +447,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				}
 			}
 
-			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geoConfSeg); nuevo != geoInterval {
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, false, 0, geoConfSeg); nuevo != geoInterval {
 				a.Logger.Debugf("geo: intervalo %ds -> %ds por aviso de modo perdido (%v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
 				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
@@ -534,22 +541,49 @@ func geoTickInterval(fromConf int) int {
 	return fromConf
 }
 
-// geoTickIntervalFor resuelve el intervalo EFECTIVO del ticker de geo.
+// geoTickIntervalFor resuelve el intervalo EFECTIVO del ticker de geo a partir de
+// las cadencias activas. Las dos fuentes apretadas NO son simétricas:
 //
-// El piso de 300 s es una salvaguarda de privacidad para la operación normal: sin
-// él, un `checkin_geo` bajo —puesto a mano o por un tipeo en el servidor—
-// convertiría la flota en un rastreador. El modo perdido lo saltea a propósito,
-// porque un equipo robado se mueve y un punto cada cinco minutos no reconstruye
-// un recorrido. El límite ahí lo pone el clamp de 1-60 min, que se aplica en el
-// servidor y otra vez en el agente (ver lostmodestate.go).
+//   - modo perdido (feature 030) REEMPLAZA la cadencia normal —es autoritativa—.
+//     El operador fija 1-60 min para el caso y esa cadencia rige aunque quede más
+//     FLOJA que la normal (p. ej. 60 min sobre un `checkin_geo` de 30 min, para
+//     ahorrar batería en un caso largo). SALTEA el piso de 300 s a propósito: un
+//     equipo robado se mueve y un punto cada 5 min no reconstruye un recorrido; el
+//     límite lo pone el clamp de 1-60 min (servidor y agente).
+//   - fuera de geocerca (feature 041) sólo APRIETA: baja la cadencia vigente si es
+//     menor, nunca la afloja, y CON el piso de 300 s —no es un caso de robo, sigue
+//     rigiendo la salvaguarda de privacidad normal—.
 //
-// Va en su propia función para poder congelar en tests que el piso protege lo que
-// tiene que proteger y no lo que no.
-func geoTickIntervalFor(perdido bool, perdidoIntervaloMin, fromConf int) int {
+// La base sin nada activo es geoTickInterval(fromConf), con su piso de 300 s: sin
+// él, un `checkin_geo` bajo —a mano o por un tipeo en el servidor— convertiría la
+// flota en un rastreador. Con perdido Y geocerca gana la menor de las dos.
+//
+// Va en su propia función para poder congelar en tests los dos pisos y que la
+// geocerca aprieta pero el modo perdido reemplaza.
+func geoTickIntervalFor(perdido bool, perdidoIntervaloMin int, outsideGeofence bool, geofenceIntervaloMin, fromConf int) int {
+	interval := geoTickInterval(fromConf)
 	if perdido {
-		return clampLostModeInterval(perdidoIntervaloMin) * 60
+		// Autoritativa: reemplaza la normal aunque quede más floja.
+		interval = clampLostModeInterval(perdidoIntervaloMin) * 60
 	}
-	return geoTickInterval(fromConf)
+	if outsideGeofence {
+		// Sólo aprieta: nunca afloja lo que ya rige.
+		if c := geofenceTickInterval(geofenceIntervaloMin); c < interval {
+			interval = c
+		}
+	}
+	return interval
+}
+
+// geofenceTickInterval traduce la cadencia de geocerca (en minutos) a segundos,
+// aplicando el piso de privacidad geoMinInterval. A diferencia del modo perdido,
+// la geocerca NO saltea el piso: no es un caso de robo. Un valor ausente (<= 0)
+// cae al default de 5 min, que coincide con el default del servidor.
+func geofenceTickInterval(intervaloMin int) int {
+	if intervaloMin <= 0 {
+		intervaloMin = geofenceDefaultIntervalMin
+	}
+	return geoTickInterval(intervaloMin * 60)
 }
 
 func (a *Agent) GetCheckInConfFromAPI() AgentCheckInConfig {
