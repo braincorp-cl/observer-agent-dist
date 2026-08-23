@@ -55,13 +55,13 @@ var openWifiEnCurso atomic.Bool
 // sin tocar la WiFi.
 //
 // `habilitado` es el toggle global del servidor (T034, `CoreSettings.open_wifi_enabled`,
-// OFF por omisión). Es el PRIMER gate a propósito: la conducta de RF-05 es sensible
-// y no debe quedar viva por el solo hecho de que el agente traiga el código —se
-// enciende deliberadamente en la consola, y sólo tras cerrar política + visto legal
-// (T022). Con el flag en false esta función es un no-op inmediato en toda la flota.
+// ON por omisión). Es el PRIMER gate: RF-05 es parte del módulo de perdidos/robados
+// (uso corporativo cubierto por el acta de entrega), y el toggle es un OPT-OUT para el
+// cliente que desestima ese módulo. Con el flag en false esta función es un no-op
+// inmediato en toda la flota, sin tener que desinstalar ni degradar el agente.
 func (a *Agent) intentarConectarWifiAbierta(habilitado bool) {
 	if !habilitado {
-		return // T034: RF-05 apagado globalmente (default)
+		return // T034: RF-05 desactivado globalmente (opt-out del cliente)
 	}
 	if openWifiBackendImpl == nil {
 		return // macOS (RF-10) u otro SO sin backend registrado
