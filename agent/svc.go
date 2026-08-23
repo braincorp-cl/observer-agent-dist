@@ -65,6 +65,14 @@ type AgentCheckInConfig struct {
 	LostModeNoHibernate    bool `json:"lost_mode_no_hibernate"`
 	LostModeWebcamOverride bool `json:"lost_mode_webcam_override"`
 	LostModeAlarm          bool `json:"lost_mode_alarm"`
+	// Feature 041: estado "fuera de geocerca" (reactivo) + cadencia geo apretada,
+	// y el baseline keep-awake (RN-08/RF-12). Aditivos: un servidor viejo no los
+	// manda y el agente ve los ceros — outside_geofence=false y, para el baseline,
+	// keep_awake_baseline=false ("no aplicar"). El baseline se reconcilia aparte
+	// del loop runtime de lost/geofence (ver baseline.go).
+	OutsideGeofence            bool `json:"outside_geofence"`
+	OutsideGeofenceIntervalMin int  `json:"outside_geofence_interval_min"`
+	KeepAwakeBaseline          bool `json:"keep_awake_baseline"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
