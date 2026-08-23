@@ -78,6 +78,9 @@ type AgentCheckInConfig struct {
 	OutsideGeofence            bool `json:"outside_geofence"`
 	OutsideGeofenceIntervalMin int  `json:"outside_geofence_interval_min"`
 	KeepAwakeBaseline          bool `json:"keep_awake_baseline"`
+	// T034: toggle global de RF-05. Zero-value false = no intentar WiFi abierta
+	// (agente viejo lo ignora; agente nuevo espera a que el server lo encienda).
+	OpenWifi bool `json:"open_wifi"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
@@ -403,9 +406,11 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				go a.reconciliarBaseline(geoConf.KeepAwakeBaseline)
 				go a.reconciliarNoHibernacion()
 				// Feature 041 · RF-05 (T016/T017): intento de asociarse a una red
-				// abierta si el equipo quedó fuera y sin conectividad. Se auto-gatea
-				// (outside_geofence + sonda de conectividad); en macOS es no-op.
-				go a.intentarConectarWifiAbierta()
+				// abierta si el equipo quedó fuera y sin conectividad. El PRIMER gate
+				// es el toggle global del server (T034, OFF por omisión): sin él en
+				// True no se toca la WiFi aunque se cumplan las condiciones de runtime.
+				// Además se auto-gatea (outside_geofence + sonda); en macOS es no-op.
+				go a.intentarConectarWifiAbierta(geoConf.OpenWifi)
 			}
 
 			perdido, perdidoIntervaloMin := a.getLostMode()

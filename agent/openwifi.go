@@ -53,7 +53,16 @@ var openWifiEnCurso atomic.Bool
 // a una red abierta no-cautiva. Best-effort: cualquier fallo se loguea y no
 // interrumpe nada. Idempotente por poll: si ya hay conectividad utilizable, sale
 // sin tocar la WiFi.
-func (a *Agent) intentarConectarWifiAbierta() {
+//
+// `habilitado` es el toggle global del servidor (T034, `CoreSettings.open_wifi_enabled`,
+// OFF por omisión). Es el PRIMER gate a propósito: la conducta de RF-05 es sensible
+// y no debe quedar viva por el solo hecho de que el agente traiga el código —se
+// enciende deliberadamente en la consola, y sólo tras cerrar política + visto legal
+// (T022). Con el flag en false esta función es un no-op inmediato en toda la flota.
+func (a *Agent) intentarConectarWifiAbierta(habilitado bool) {
+	if !habilitado {
+		return // T034: RF-05 apagado globalmente (default)
+	}
 	if openWifiBackendImpl == nil {
 		return // macOS (RF-10) u otro SO sin backend registrado
 	}
