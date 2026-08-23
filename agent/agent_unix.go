@@ -925,7 +925,16 @@ func (a *Agent) PlatVer() (string, error) { return "", nil }
 
 func (a *Agent) SendSoftware() {}
 
-func (a *Agent) UninstallCleanup() {}
+// UninstallCleanup corre en la desinstalación vía `observeragent -m cleanup`
+// (el script de desinstalación lo invoca ANTES de borrar el binario). Feature
+// 041 (T033): restaura el baseline keep-awake — en Linux el backend borra el
+// drop-in de logind, en macOS restaura `pmset`. reconciliarBaseline(false)
+// restaura+limpia sólo si estaba aplicado; no-op si nunca se aplicó o si el SO no
+// tiene backend. El aviso al servidor lo hace el propio script (NotifyUninstall),
+// así que acá no se duplica.
+func (a *Agent) UninstallCleanup() {
+	a.reconciliarBaseline(false)
+}
 
 func (a *Agent) RunMigrations() {}
 

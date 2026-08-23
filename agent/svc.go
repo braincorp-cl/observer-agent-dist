@@ -175,6 +175,17 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		// persistencia del estado la incluya y el bucle la aplique al transicionar.
 		a.setLostModeCascade(cascadeDeConfig(conf))
 		a.SetLostMode(conf.LostMode, conf.LostModeIntervalMin)
+
+		// Feature 041 (T015): estado de geocerca (reactivo) + baseline keep-awake,
+		// sólo con config real (mismo resguardo fromServer que el modo perdido: con
+		// el repliegue todos los campos son ceros, y reconciliar el baseline contra
+		// ese false lo revertiría por una caída de red — flapeo). setOutsideGeofence
+		// va antes de reconciliar no-dormir para que lea el valor fresco. Se corre en
+		// segundo plano: capturar/aplicar toca el SO (powercfg/pmset) y no debe
+		// bloquear el arranque del servicio.
+		a.setOutsideGeofence(conf.OutsideGeofence)
+		go a.reconciliarBaseline(conf.KeepAwakeBaseline)
+		go a.reconciliarNoHibernacion()
 	}
 	// El interruptor de webcam NO se aplica acá aunque el dato ya esté: se escribe
 	// en un solo lugar, `lanzarCapturaGeo`, bajo la guardia `geoRunning`. Ver el
@@ -254,9 +265,13 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 	// estado venía a evitar: un equipo robado se reinicia, y el reinicio no puede
 	// costar una ventana ciega en cada arranque.
 	perdidoAlArrancar, intervaloAlArrancar := a.getLostMode()
-	// Feature 041: la cadencia de geocerca se cablea en T015 (Integração); acá
-	// pasa neutra (false, 0) para no cambiar el comportamiento del arranque.
-	geoInterval := geoTickIntervalFor(perdidoAlArrancar, intervaloAlArrancar, false, 0, conf.Geo)
+	// Feature 041 (T015): la cadencia de geocerca ya está cableada. El estado
+	// "fuera de geocerca" se guarda en memoria (setOutsideGeofence arriba) y la
+	// cadencia apretada viaja en el config. Se conservan en variables de bucle
+	// porque el case `lostModeChanged` re-arma el ticker sin consultar config.
+	geofenceOutsideSeg := a.getOutsideGeofence()
+	geofenceIntervaloSeg := conf.OutsideGeofenceIntervalMin
+	geoInterval := geoTickIntervalFor(perdidoAlArrancar, intervaloAlArrancar, geofenceOutsideSeg, geofenceIntervaloSeg, conf.Geo)
 	a.Logger.Debugf("geo: ticker inicial %ds (modo perdido: %v)", geoInterval, perdidoAlArrancar)
 	checkInGeoTicker := time.NewTicker(time.Duration(geoInterval) * time.Second)
 
@@ -374,6 +389,23 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			if geoConf.fromServer {
 				a.setLostModeCascade(cascadeDeConfig(geoConf))
 				a.SetLostMode(geoConf.LostMode, geoConf.LostModeIntervalMin)
+
+				// Feature 041 (T015): este tick es el ÚNICO canal por el que el
+				// agente se entera de un cambio de geocerca (no hay push como en el
+				// modo perdido). Sólo con config real (mismo resguardo): con el
+				// repliegue el `outside_geofence=false` revertiría el no-dormir de un
+				// equipo que sigue fuera por una caída de red, y el `keep_awake_baseline=false`
+				// flapearía el baseline. reconciliarNoHibernacion cubre la geocerca
+				// como fuente aunque no llegue un `lostModeChanged`.
+				a.setOutsideGeofence(geoConf.OutsideGeofence)
+				geofenceOutsideSeg = geoConf.OutsideGeofence
+				geofenceIntervaloSeg = geoConf.OutsideGeofenceIntervalMin
+				go a.reconciliarBaseline(geoConf.KeepAwakeBaseline)
+				go a.reconciliarNoHibernacion()
+				// Feature 041 · RF-05 (T016/T017): intento de asociarse a una red
+				// abierta si el equipo quedó fuera y sin conectividad. Se auto-gatea
+				// (outside_geofence + sonda de conectividad); en macOS es no-op.
+				go a.intentarConectarWifiAbierta()
 			}
 
 			perdido, perdidoIntervaloMin := a.getLostMode()
@@ -389,7 +421,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 			// sin red, que dejaba puesto el intervalo del repliegue en vez del real,
 			// y ahora también las dos transiciones del modo perdido: el ticker nunca
 			// se detiene, así que entrar y salir del modo no necesita más código.
-			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, false, 0, geoConf.Geo); nuevo != geoInterval {
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geofenceOutsideSeg, geofenceIntervaloSeg, geoConf.Geo); nuevo != geoInterval {
 				a.Logger.Debugf("geo: intervalo %ds -> %ds (modo perdido: %v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
 				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)
@@ -447,7 +479,7 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				}
 			}
 
-			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, false, 0, geoConfSeg); nuevo != geoInterval {
+			if nuevo := geoTickIntervalFor(perdido, perdidoIntervaloMin, geofenceOutsideSeg, geofenceIntervaloSeg, geoConfSeg); nuevo != geoInterval {
 				a.Logger.Debugf("geo: intervalo %ds -> %ds por aviso de modo perdido (%v)", geoInterval, nuevo, perdido)
 				geoInterval = nuevo
 				checkInGeoTicker.Reset(time.Duration(geoInterval) * time.Second)

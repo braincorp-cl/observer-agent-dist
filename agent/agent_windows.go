@@ -754,6 +754,13 @@ func (a *Agent) UninstallCleanup() {
 	// trampa esperando a que alguien reordene estas líneas.
 	a.NotifyUninstall(uninstallSource())
 
+	// Feature 041 (T033): restaurar el baseline keep-awake antes de borrar nada.
+	// reconciliarBaseline(false) restaura el esquema de energía capturado y limpia
+	// el estado si estaba aplicado; no-op si nunca se aplicó. Va sólo en la
+	// desinstalación (este `-m cleanup` del [UninstallRun]); el update en sitio no
+	// pasa por acá, así que no revierte el baseline de un equipo que sigue enrolado.
+	a.reconciliarBaseline(false)
+
 	registry.DeleteKey(registry.LOCAL_MACHINE, `SOFTWARE\ObserverRMM`)
 	a.PatchMgmnt(false)
 	a.CleanupAgentUpdates()

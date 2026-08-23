@@ -55,6 +55,14 @@ func enSegundoPlano(f func()) {
 var (
 	outsideGeofenceMu  sync.RWMutex
 	outsideGeofenceVal bool
+
+	// noHibernacionMu serializa la reconciliación de no-dormir. Feature 041
+	// (T015) la llama desde tres goroutines —arranque, tick de geo y transición
+	// de modo perdido—; sin este cerrojo, dos reconciliaciones concurrentes
+	// podrían leer "no aplicada" a la vez y duplicar el esquema de energía en
+	// Windows (aplicar/revertir sólo se protegen por existencia de archivo, no
+	// por mutex). El cerrojo vuelve atómico el read-compute-apply.
+	noHibernacionMu sync.Mutex
 )
 
 func (a *Agent) setOutsideGeofence(v bool) {
@@ -81,6 +89,9 @@ func (a *Agent) getOutsideGeofence() bool {
 // ya son idempotentes (guardan estado en disco), así que llamarlo por poll o por
 // transición no encadena copias ni re-duplica el inhibidor.
 func (a *Agent) reconciliarNoHibernacion() {
+	noHibernacionMu.Lock()
+	defer noHibernacionMu.Unlock()
+
 	activo, _ := a.getLostMode()
 	if noHibernacionDeseada(activo, a.getLostModeCascade().NoHibernate, a.getOutsideGeofence()) {
 		a.aplicarNoHibernacion()
