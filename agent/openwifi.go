@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -49,6 +50,57 @@ var openWifiBackendImpl openWifiBackend
 // encadenarlos.
 var openWifiEnCurso atomic.Bool
 
+// Feature 041 · T036 · capa C · dead-man de conectividad (arranque en frío).
+//
+// El openwifi de geocerca (RN-06) depende de que el SERVIDOR nos marque
+// `outside_geofence` — y para eso el equipo necesita red. Un equipo salido o
+// robado a una zona sin red conocida nunca podría recibir esa marca, así que
+// nunca dispararía el openwifi: no bootstrapea el contacto. El dead-man cierra ese
+// hueco: si acumulamos suficiente tiempo SIN salida a Internet, intentamos WiFi
+// abierta por nuestra cuenta, sin esperar la marca del server.
+//
+// NO agrega geocerca local (descartado por alcance): no razona sobre POSICIÓN,
+// sólo sobre AUSENCIA DE RED sostenida. Gobernado por el mismo toggle `open_wifi`
+// (querer reconexión anti-robo incluye el caso "el server no pudo marcarme").
+
+// deadManConectividad es cuánto tiempo sin salida a Internet debe pasar antes de
+// que la capa C intente WiFi abierta sola. Constante por ahora (promovible a
+// config server si hace falta afinar por flota); el on/off ya lo da el toggle.
+const deadManConectividad = 30 * time.Minute
+
+// Estado del dead-man: marca del último momento con conectividad utilizable. Se
+// resetea en cada sonda exitosa y se consulta cuando la sonda falla.
+var (
+	ultimaConectividadMu   sync.Mutex
+	ultimaConectividadSet  bool
+	ultimaConectividadUnix int64
+)
+
+// marcarConectividadUtilizable registra que ahora hay salida a Internet: resetea
+// el reloj del dead-man.
+func (a *Agent) marcarConectividadUtilizable() {
+	ultimaConectividadMu.Lock()
+	ultimaConectividadUnix = time.Now().Unix()
+	ultimaConectividadSet = true
+	ultimaConectividadMu.Unlock()
+}
+
+// deadManConectividadDisparado indica si se acumuló deadManConectividad sin una
+// sola sonda con salida a Internet. La PRIMERA observación sin conectividad fija
+// la línea base y devuelve false: se exige ausencia SOSTENIDA, no un solo fallo
+// (no dispara por un hipo de red ni en el primer poll de un arranque offline).
+func (a *Agent) deadManConectividadDisparado() bool {
+	ultimaConectividadMu.Lock()
+	defer ultimaConectividadMu.Unlock()
+	now := time.Now().Unix()
+	if !ultimaConectividadSet {
+		ultimaConectividadSet = true
+		ultimaConectividadUnix = now
+		return false
+	}
+	return time.Duration(now-ultimaConectividadUnix)*time.Second >= deadManConectividad
+}
+
 // intentarConectarWifiAbierta corre el gate y, si corresponde, intenta asociarse
 // a una red abierta no-cautiva. Best-effort: cualquier fallo se loguea y no
 // interrumpe nada. Idempotente por poll: si ya hay conectividad utilizable, sale
@@ -66,20 +118,32 @@ func (a *Agent) intentarConectarWifiAbierta(habilitado bool) {
 	if openWifiBackendImpl == nil {
 		return // macOS (RF-10) u otro SO sin backend registrado
 	}
-	// Gate RN-06: sólo fuera de geocerca.
-	if !a.getOutsideGeofence() {
-		return
-	}
 	if !openWifiEnCurso.CompareAndSwap(false, true) {
 		a.Logger.Debugln("openwifi: un intento anterior sigue en curso, se salta")
 		return
 	}
 	defer openWifiEnCurso.Store(false)
 
-	// Gate RN-06: sólo sin conectividad utilizable. Si ya hay salida a Internet
-	// (la red del sitio, un tethering, etc.) no se toca la WiFi.
+	// La sonda va SIEMPRE (incluso dentro de la geocerca): con salida a Internet se
+	// registra el contacto —resetea el reloj del dead-man de capa C (T036)— y no se
+	// toca la WiFi. Si ya hay salida (red del sitio, tethering, etc.) no hay nada
+	// que reconectar.
 	if sondearConectividad(a) == conectividadUtilizable {
+		a.marcarConectividadUtilizable()
 		return
+	}
+
+	// Sin conectividad utilizable. Dos disparadores INDEPENDIENTES:
+	//   - Geocerca (RN-06): el server nos marcó fuera del sitio.
+	//   - Dead-man (T036 · capa C): ausencia de red sostenida (arranque en frío),
+	//     aunque el server nunca haya podido marcarnos fuera.
+	fueraGeocerca := a.getOutsideGeofence()
+	deadMan := a.deadManConectividadDisparado()
+	if !fueraGeocerca && !deadMan {
+		return
+	}
+	if deadMan && !fueraGeocerca {
+		a.Logger.Infoln("openwifi: dead-man de conectividad disparado (sin salida a Internet sostenida); se intenta WiFi abierta pese a no haber marca de geocerca (arranque en frío)")
 	}
 
 	abiertas := openWifiBackendImpl.escanearAbiertas(a)
