@@ -489,6 +489,8 @@ func (a *Agent) Install(i *Installer) {
 		if i.Power {
 			a.Logger.Infoln("Disabling sleep/hibernate...")
 			DisableSleepHibernate()
+			a.Logger.Infoln("Ensuring WiFi reconnects after reboot without login...")
+			EnsureWifiReconnect()
 		}
 
 		if i.Ping {
@@ -503,6 +505,25 @@ func (a *Agent) Install(i *Installer) {
 	}
 
 	a.installerMsg("Installation was successful!\nAllow a few minutes for the agent to properly display in the RMM", "info", i.Silent)
+}
+
+// reconciliarWifiReconnect re-aplica la guarda de reconexión WiFi POR POLL, no
+// sólo en la instalación. Motivo (observado en terreno): el update del agente NO
+// re-ejecuta Install(), y un equipo instalado por LAN que después pasa a WiFI
+// (undock, salida a terreno) nunca habría pasado por el gate del instalador. Se
+// llama en cada arranque del servicio (= cada update y cada reboot) y en cada tick
+// geo, así que re-evalúa `activeIsWifi` y captura la transición LAN→WiFi.
+//
+// Gateado por el MISMO toggle keep_awake_baseline que el resto del keep-awake
+// (baseline_windows.go aplica "la misma política que la instalación"): querer que
+// el equipo siga despierto para reportar implica querer que su WiFi reconecte.
+// EnsureWifiReconnect es idempotente y no-op en LAN y fuera de Windows, así que
+// re-ejecutarlo cada poll es barato.
+func (a *Agent) reconciliarWifiReconnect(enabled bool) {
+	if !enabled {
+		return
+	}
+	EnsureWifiReconnect()
 }
 
 func copyFile(src, dst string) error {

@@ -87,6 +87,12 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 
 func DisableSleepHibernate() {}
 
+// EnsureWifiReconnect es un no-op fuera de Windows: la guarda de reconexión WiFi
+// post-reboot (perfiles all-user a auto + power-management de la NIC) es
+// específica de Windows. En Linux/macOS NetworkManager/CoreWLAN reconectan solas
+// las redes conocidas tras el reboot, así que no hay lección de terreno análoga.
+func EnsureWifiReconnect() {}
+
 func EnablePing() {}
 
 func EnableRDP() {}

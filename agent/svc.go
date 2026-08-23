@@ -189,6 +189,10 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		a.setOutsideGeofence(conf.OutsideGeofence)
 		go a.reconciliarBaseline(conf.KeepAwakeBaseline)
 		go a.reconciliarNoHibernacion()
+		// Re-evalúa la guarda de reconexión WiFi en cada arranque del servicio
+		// (= cada update/reboot): captura un equipo que pasó de LAN a WiFi después
+		// del install. Ver reconciliarWifiReconnect.
+		go a.reconciliarWifiReconnect(conf.KeepAwakeBaseline)
 	}
 	// El interruptor de webcam NO se aplica acá aunque el dato ya esté: se escribe
 	// en un solo lugar, `lanzarCapturaGeo`, bajo la guardia `geoRunning`. Ver el
@@ -405,6 +409,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				geofenceIntervaloSeg = geoConf.OutsideGeofenceIntervalMin
 				go a.reconciliarBaseline(geoConf.KeepAwakeBaseline)
 				go a.reconciliarNoHibernacion()
+				// Re-evalúa la reconexión WiFi también por tick geo, para captar una
+				// transición LAN→WiFi a mitad de sesión (sin esperar a un reinicio).
+				go a.reconciliarWifiReconnect(geoConf.KeepAwakeBaseline)
 				// Feature 041 · RF-05 (T016/T017): intento de asociarse a una red
 				// abierta si el equipo quedó fuera y sin conectividad. El PRIMER gate
 				// es el toggle global del server (T034, OFF por omisión): sin él en

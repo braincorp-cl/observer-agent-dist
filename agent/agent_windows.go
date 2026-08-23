@@ -690,6 +690,101 @@ func DisableSleepHibernate() {
 	_, _ = CMDShell("cmd", args, "powercfg -S SCHEME_CURRENT", 5, false, false, false, nil, nil, nil)
 }
 
+// EnsureWifiReconnect hace que un portátil que reinicia por WiFi vuelva SOLO a su
+// red conocida, sin esperar a que un humano inicie sesión. Complementa a
+// DisableSleepHibernate: de nada sirve mantener el equipo despierto si al
+// reiniciar (parche, batería agotada, cuelgue) se queda sin red hasta que alguien
+// se loguea y conecta la WiFi a mano. Es la lección de terreno del parchado
+// (2026-08-21): un perfil WiFi all-user en "conectar manualmente" NO reconecta
+// tras el reboot, y el equipo desaparece de la consola justo cuando importa.
+//
+// Permanente y de una sola vía, igual que DisableSleepHibernate: opt-in por el
+// flag -power del instalador. A diferencia del guard transitorio del script de
+// parches (que respalda y revierte), acá NO se respalda ni se revierte — el
+// objetivo es que el equipo reconecte SIEMPRE.
+//
+// Sólo actúa si el equipo está EN WiFi ahora (RN del usuario: LAN ya reconecta al
+// boot, no se le toca nada). Nunca lee ni exporta claves WiFi: sólo el MODO de
+// conexión del perfil y el power-management de la NIC.
+func EnsureWifiReconnect() {
+	if !activeIsWifi() {
+		return
+	}
+	args := make([]string, 0)
+
+	// 1. WLAN AutoConfig arriba y en automático: sin ese servicio ningún perfil
+	//    reconecta, con connectionmode=auto o sin él.
+	_, _ = CMDShell("cmd", args, "sc config WlanSvc start= auto", 5, false, false, false, nil, nil, nil)
+	_, _ = CMDShell("cmd", args, "sc start WlanSvc", 5, false, false, false, nil, nil, nil)
+
+	// 2. Todos los perfiles WiFi conocidos a conexión automática. Los all-user son
+	//    los únicos que conectan ANTES del login; setear uno ya-auto es idempotente
+	//    y setear uno de usuario es inocuo, así que no se filtra por tipo/modo
+	//    (evita parsear etiquetas de netsh sensibles al idioma).
+	for _, name := range wlanProfiles() {
+		_, _ = CMDShell("cmd", args, fmt.Sprintf(`netsh wlan set profileparameter name="%s" connectionmode=auto`, name), 5, false, false, false, nil, nil, nil)
+	}
+
+	// 3. Apagar el power-management de la NIC WiFi ("permitir que el equipo apague
+	//    este dispositivo para ahorrar energía"), que en suspensión/batería corta
+	//    la radio y deja al equipo mudo. DisableSleepHibernate no lo cubre.
+	disableWifiNicPowerMgmt()
+}
+
+// activeIsWifi indica si hay ahora una NIC 802.11 operativa (up). Numérico e
+// invariante al idioma: filtra por InterfaceType 71 (IANA ieee80211) e
+// InterfaceOperationalStatus 1 (up) sobre MSFT_NetAdapter, sin depender del texto
+// localizado de `netsh`/`Get-NetAdapter`.
+func activeIsWifi() bool {
+	out, err := runCapture(15*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"if (Get-CimInstance -ClassName MSFT_NetAdapter -Namespace root/StandardCimv2 -ErrorAction SilentlyContinue | "+
+			"Where-Object { $_.InterfaceType -eq 71 -and $_.InterfaceOperationalStatus -eq 1 }) { 'WIFI_UP' }")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "WIFI_UP")
+}
+
+// wlanProfiles extrae los nombres de perfil de `netsh wlan show profiles`. Se
+// apoya sólo en la estructura (líneas sangradas con ':' y un valor no vacío), no
+// en las etiquetas traducidas ("All User Profile"/"Perfil de todos los
+// usuarios"): el encabezado "Profiles on interface X:" va en columna 0 y sin
+// valor tras el ':', los encabezados de sección no llevan ':', y "<None>" se
+// descarta.
+func wlanProfiles() []string {
+	out, err := runCapture(15*time.Second, "netsh", "wlan", "show", "profiles")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			continue // encabezados a ras de margen (incluye "Profiles on interface X:")
+		}
+		i := strings.Index(line, ":")
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[i+1:])
+		if name == "" || name == "<None>" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// disableWifiNicPowerMgmt apaga "permitir que el equipo apague este dispositivo"
+// en cada NIC 802.11. Sólo PowerShell tiene esta perilla; se filtra por
+// InterfaceType 71 (invariante) y se apaga por nombre con -NoRestart para no
+// tirar la conexión durante la instalación. Best-effort.
+func disableWifiNicPowerMgmt() {
+	ps := "Get-CimInstance -ClassName MSFT_NetAdapter -Namespace root/StandardCimv2 -ErrorAction SilentlyContinue | " +
+		"Where-Object { $_.InterfaceType -eq 71 } | ForEach-Object { " +
+		"Set-NetAdapterPowerManagement -Name $_.Name -AllowComputerToTurnOffDevice Disabled -NoRestart -ErrorAction SilentlyContinue }"
+	_, _ = runCapture(20*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+}
+
 // NewCOMObject creates a new COM object for the specifed ProgramID.
 func NewCOMObject(id string) (*ole.IDispatch, error) {
 	unknown, err := oleutil.CreateObject(id)
