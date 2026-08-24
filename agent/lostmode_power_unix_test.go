@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package agent
 
@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// Feature 038 · T011 — no-suspensión reversible en Linux.
+// Feature 038 · no-suspensión reversible en unix (Linux T011 + macOS T010).
 //
-// Se prueba la POLÍTICA (idempotencia, revert exacto, limpieza de huérfano) con
-// dobles en las tres costuras: no hay systemd ni procesos reales de por medio,
-// que es lo que hace la prueba determinista en CI. El lanzamiento real de
-// systemd-inhibit se ejercita en terreno (E2E), no acá.
+// Se prueba la POLÍTICA compartida (idempotencia, revert exacto, limpieza de
+// huérfano) con dobles en las tres costuras: no hay systemd/caffeinate ni procesos
+// reales de por medio, que es lo que hace la prueba determinista en CI. El
+// lanzamiento real del inhibidor se ejercita en terreno (E2E), no acá.
 
 func conInhibidorFalso(t *testing.T) (arranques *int, vivo map[int]bool, matados *[]int) {
 	t.Helper()
@@ -46,7 +46,7 @@ func conInhibidorFalso(t *testing.T) (arranques *int, vivo map[int]bool, matados
 	return &n, alive, &killed
 }
 
-func TestNoSuspensionLinuxAplicaUnaVezYRevierte(t *testing.T) {
+func TestNoSuspensionUnixAplicaUnaVezYRevierte(t *testing.T) {
 	arranques, _, matados := conInhibidorFalso(t)
 	a := testAgent()
 
@@ -79,7 +79,7 @@ func TestNoSuspensionLinuxAplicaUnaVezYRevierte(t *testing.T) {
 	}
 }
 
-func TestNoSuspensionLinuxRelanzaSiElPidGuardadoMurio(t *testing.T) {
+func TestNoSuspensionUnixRelanzaSiElPidGuardadoMurio(t *testing.T) {
 	arranques, vivo, _ := conInhibidorFalso(t)
 	a := testAgent()
 
@@ -98,7 +98,7 @@ func TestNoSuspensionLinuxRelanzaSiElPidGuardadoMurio(t *testing.T) {
 	}
 }
 
-func TestNoSuspensionLinuxEstadoIlegibleSeDescarta(t *testing.T) {
+func TestNoSuspensionUnixEstadoIlegibleSeDescarta(t *testing.T) {
 	conInhibidorFalso(t)
 	a := testAgent()
 

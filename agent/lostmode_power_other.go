@@ -1,24 +1,20 @@
-//go:build !windows && !linux
+//go:build !windows && !linux && !darwin
 
 package agent
 
 // No-dormir REACTIVA (por transición modo perdido / salida de geocerca) en los SO
-// que aún no la implementan. Build tag !windows && !linux ⇒ hoy cubre macOS.
+// que aún no la implementan. Con Windows (T007, `lostmode_power_windows.go`),
+// Linux (T011) y macOS (T010) ya cubiertos —Linux/macOS comparten el esqueleto
+// unix (`lostmode_power_unix.go`) y sólo difieren en el lanzador (`systemd-inhibit`
+// vs `caffeinate`)—, este build tag ya no cubre ningún SO de la flota real: es la
+// red de seguridad para cualquier GOOS futuro (p. ej. freebsd), donde la
+// no-dormir reactiva es un **no-op honesto** que no finge aplicar/revertir. El
+// resto de la cascada (bloqueo diferido, override de webcam, geo intensiva y la
+// alarma) opera igual.
 //
-// Windows (T007, `lostmode_power_windows.go`) y Linux (T011,
-// `lostmode_power_linux.go`) ya tienen no-suspensión reactiva reversible. En macOS
-// es un **no-op honesto y documentado** (feature 041 · RF-10): la cobertura del
-// paquete reactivo es Windows/Linux ahora, macOS diferido a T010 de la 038
-// (`caffeinate`/`pmset` por transición). Hasta entonces estas funciones no hacen
-// nada a propósito —no fingen aplicar/revertir— y el resto de la cascada (bloqueo
-// diferido, override de webcam, geo intensiva y la alarma) sí opera igual en macOS.
-//
-// ⚠️ No confundir con el BASELINE keep-awake persistente (RN-08/RF-12), que en
-// macOS SÍ actúa vía `pmset` (T029, `baseline_darwin.go`): el baseline es un
-// prerrequisito de la medición y no depende de un caso abierto, mientras que esta
-// no-dormir reactiva es efímera (mientras dura la transición). Que el reactivo sea
-// no-op en macOS NO deja al Mac medible-solo-si-despierto: de eso se encarga el
-// baseline, que reconcilia por poll con independencia de este archivo.
+// ⚠️ No confundir con el BASELINE keep-awake persistente (RN-08/RF-12), que es
+// otra capa (config del sistema, no un proceso sostenido) y tiene su propia
+// implementación por-SO.
 
 func (a *Agent) aplicarNoHibernacion()  {}
 func (a *Agent) revertirNoHibernacion() {}
