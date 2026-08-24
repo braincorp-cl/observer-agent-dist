@@ -45,7 +45,7 @@ jobs:
     #      del repo ajeno, dejando `wh1te909/ormm-shared` — que da 404. Renombrar
     #      la cita de un tercero no limpia nada: fabrica una referencia falsa.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan for legacy strings
         run: |
@@ -99,9 +99,9 @@ jobs:
         go-version: ['1.20.14', '1.26.5']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -142,9 +142,9 @@ jobs:
     name: Ensure mac agent compiles (cgo + CoreLocation)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
 
