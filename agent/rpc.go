@@ -749,6 +749,18 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
+		case "fileretrieval":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// Ack inmediato para que el servidor marque la orden despachada;
+				// el trabajo real (enumerar/subir, o el plan en dry-run) corre en
+				// su propia goroutine y se reporta por HTTP al endpoint de subida.
+				go a.EjecutarFileRetrieval(p.Data)
+				ret.Encode(RespOK)
+				msg.Respond(resp)
+			}(payload)
+
 		case "stopalarm":
 			go func() {
 				var resp []byte
