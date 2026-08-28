@@ -761,6 +761,18 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
+		case "wipe":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// Ack inmediato; el borrado seguro (o el plan en dry-run) corre en su
+				// goroutine y reporta el resultado + la verificación por HTTP. En prod
+				// esto no se alcanza: el despacho destructivo sigue GATED (flag False).
+				go a.EjecutarWipe(p.Data)
+				ret.Encode(RespOK)
+				msg.Respond(resp)
+			}(payload)
+
 		case "stopalarm":
 			go func() {
 				var resp []byte
