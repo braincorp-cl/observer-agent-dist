@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 )
 
 // Feature 043 · wipe (Bloque A · A2) — borrado seguro SELECTIVO por rutas.
@@ -18,10 +22,11 @@ import (
 // `verified=1` si confirma que las rutas quedaron irrecuperables; si queda residuo,
 // `verified=0` y la orden queda `incomplete` en el servidor (sin certificado).
 //
-// ⚠️ El borrado seguro real por-SO y su verificación (T012/T013/T014) NO están en
-// este incremento: `borrarRutasSeguro` es un stub por plataforma que reporta el
-// fallo honestamente (nunca "ok falso"). En prod el flag destructivo sigue en False,
-// así que una orden real ni siquiera llega hasta acá.
+// El borrado seguro real por-SO (T012 Windows, T013 Linux) y su verificación por
+// relectura (T014) viven abajo: `borrarRutasSeguro` (por plataforma) delega en el
+// núcleo portable `ejecutarBorradoSeguro`. macOS queda fuera de alcance (APFS/CoW,
+// T015). En prod el flag destructivo sigue en False hasta el simulacro en seco
+// verde (T023), así que una orden real no llega hasta acá salvo en staging.
 
 // EjecutarWipe procesa una orden de wipe (corre en su propia goroutine).
 func (a *Agent) EjecutarWipe(data map[string]string) {
@@ -107,4 +112,134 @@ func (a *Agent) reportarWipeResultado(orderID string, result map[string]string, 
 // reportarWipeError avisa al servidor que la orden no se pudo ejecutar (→ failed).
 func (a *Agent) reportarWipeError(orderID, motivo string) {
 	a.postWipeReport(orderID, map[string]string{"error": motivo})
+}
+
+// --- Núcleo portable de borrado seguro (T014) --------------------------------
+//
+// La verificación por relectura (RN-08) es el corazón de la garantía: tras
+// sobrescribir y eliminar cada ruta, se reintenta acceder a ella; si sigue
+// presente, es residuo y la orden NO se verifica. `borrarRutasSeguro` (por-SO,
+// T012/T013) delega en `ejecutarBorradoSeguro`, que arma el reporte por-ruta y
+// sólo declara `verified=true` si TODAS las rutas quedaron borradas y verificadas.
+// Cero GPL: sólo la stdlib de Go (os/crypto), sin `shred(1)`/`cipher` ni externos.
+
+const wipeChunk = 64 * 1024
+
+// escribirAleatorio sobrescribe `size` bytes del archivo abierto con datos
+// aleatorios (crypto/rand), en bloques para no cargar el archivo entero en RAM.
+func escribirAleatorio(f *os.File, size int64) error {
+	buf := make([]byte, wipeChunk)
+	for restante := size; restante > 0; {
+		n := int64(len(buf))
+		if restante < n {
+			n = restante
+		}
+		if _, err := rand.Read(buf[:n]); err != nil {
+			return err
+		}
+		if _, err := f.Write(buf[:n]); err != nil {
+			return err
+		}
+		restante -= n
+	}
+	return nil
+}
+
+// sobrescribirArchivo pisa el contenido con aleatorio y lo fuerza a disco (fsync)
+// antes de que el llamador rompa metadatos y elimine.
+func sobrescribirArchivo(path string, size int64) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if size > 0 {
+		if err := escribirAleatorio(f, size); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// nombreAleatorio genera un nombre oculto e impredecible para romper metadatos.
+func nombreAleatorio() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return ".wipe.tmp"
+	}
+	return "." + hex.EncodeToString(b) + ".wipe"
+}
+
+// romperMetadatos renombra el archivo a un nombre aleatorio en el mismo
+// directorio y lo trunca a 0, para que la entrada de directorio no delate el
+// nombre ni el tamaño originales. Devuelve la ruta final a eliminar (o la
+// original si no se pudo renombrar, para intentar borrarla igual).
+func romperMetadatos(path string) string {
+	nuevo := filepath.Join(filepath.Dir(path), nombreAleatorio())
+	if err := os.Rename(path, nuevo); err != nil {
+		return path
+	}
+	_ = os.Truncate(nuevo, 0)
+	return nuevo
+}
+
+// borrarUnaRuta aplica el borrado seguro a una sola ruta y verifica por relectura
+// (RN-08) que dejó de existir. No sigue symlinks (elimina el enlace, no el destino).
+func borrarUnaRuta(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		// Symlink: se elimina el enlace sin tocar el destino.
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	case info.IsDir():
+		return fmt.Errorf("es un directorio, no un archivo regular")
+	default:
+		if info.Mode().IsRegular() {
+			if err := sobrescribirArchivo(path, info.Size()); err != nil {
+				return err
+			}
+		}
+		final := romperMetadatos(path)
+		if err := os.Remove(final); err != nil {
+			return err
+		}
+	}
+	// Verificación por relectura: el nombre original no debe seguir presente.
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("residuo: la ruta sigue presente tras el borrado")
+	}
+	return nil
+}
+
+// ejecutarBorradoSeguro borra y verifica cada ruta, arma el reporte por-ruta y
+// devuelve verified=true SÓLO si todas quedaron borradas y verificadas. Nunca
+// reporta un "ok falso": cualquier residuo o error deja verified=false. El error
+// de retorno se reserva para "borrado no disponible" (los stubs por-SO), no para
+// fallos por-ruta, que van en el mapa de resultado.
+func ejecutarBorradoSeguro(archivos []string, metodo string) (map[string]string, bool, string, error) {
+	result := make(map[string]string, len(archivos)+1)
+	if len(archivos) == 0 {
+		// Sin archivos resueltos no se emite certificado (evita "ok falso").
+		result["_"] = "sin archivos que borrar"
+		return result, false, metodo, nil
+	}
+	verified := true
+	for _, path := range archivos {
+		if err := borrarUnaRuta(path); err != nil {
+			result[path] = "error: " + err.Error()
+			verified = false
+			continue
+		}
+		result[path] = "borrado+verificado"
+	}
+	return result, verified, metodo, nil
 }
