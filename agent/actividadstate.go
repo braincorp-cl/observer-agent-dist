@@ -160,3 +160,11 @@ func (a *Agent) ResumeActividad() {
 	actMu.Unlock()
 	a.Logger.Infoln("ResumeActividad: el monitoreo seguía ENCENDIDO, cadencia", actIntervalSeg, "s")
 }
+
+// aplicarActividadDeConfig aplica el estado de monitoreo que el servidor resolvió
+// (feature 049-B2) y entrega por el polling de config. El llamador garantiza que
+// la config vino de verdad del servidor (fromServer): con el repliegue todos los
+// campos son ceros y apagarían el muestreo por una caída de red.
+func (a *Agent) aplicarActividadDeConfig(conf AgentCheckInConfig) {
+	a.SetActividad(conf.ActividadActive, conf.ActividadIntervalSeg, conf.ActividadInactivoSeg, conf.ActividadConTitulo)
+}

@@ -81,6 +81,14 @@ type AgentCheckInConfig struct {
 	// T034: toggle global de RF-05. Zero-value false = no intentar WiFi abierta
 	// (agente viejo lo ignora; agente nuevo espera a que el server lo encienda).
 	OpenWifi bool `json:"open_wifi"`
+	// Feature 049-B2: monitoreo de actividad RESUELTO por el servidor (global +
+	// cascada equipo > sitio > cliente). Canal de respaldo del push NATS
+	// `actividad_monitor`. Un servidor viejo no los manda y el agente ve los
+	// ceros = apagado, que es el lado correcto en el que fallar.
+	ActividadActive      bool `json:"actividad_active"`
+	ActividadIntervalSeg int  `json:"actividad_interval_seg"`
+	ActividadInactivoSeg int  `json:"actividad_inactivo_seg"`
+	ActividadConTitulo   bool `json:"actividad_con_titulo"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.
@@ -198,6 +206,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		// (= cada update/reboot): captura un equipo que pasó de LAN a WiFi después
 		// del install. Ver reconciliarWifiReconnect.
 		go a.reconciliarWifiReconnect(conf.KeepAwakeBaseline)
+		// Feature 049-B2: sólo con config real; con el repliegue el `false`
+		// apagaría el muestreo restaurado por ResumeActividad por una caída de red.
+		a.aplicarActividadDeConfig(conf)
 	}
 	// El interruptor de webcam NO se aplica acá aunque el dato ya esté: se escribe
 	// en un solo lugar, `lanzarCapturaGeo`, bajo la guardia `geoRunning`. Ver el
@@ -423,6 +434,9 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 				// True no se toca la WiFi aunque se cumplan las condiciones de runtime.
 				// Además se auto-gatea (outside_geofence + sonda); en macOS es no-op.
 				go a.intentarConectarWifiAbierta(geoConf.OpenWifi)
+				// Feature 049-B2: respaldo del push `actividad_monitor` para el
+				// equipo que estaba apagado cuando se cambió su monitoreo.
+				a.aplicarActividadDeConfig(geoConf)
 			}
 
 			perdido, perdidoIntervaloMin := a.getLostMode()
