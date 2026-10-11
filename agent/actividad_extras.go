@@ -46,7 +46,9 @@ var marcasNavegador = []string{
 }
 
 var (
-	reContador  = regexp.MustCompile(`^\(\d+\+?\)\s*`)
+	reContador = regexp.MustCompile(`^\(\d+\+?\)\s*`)
+	// "Zoho Mail (persona@dominio)": la cuenta no es parte del sitio.
+	reCorreo    = regexp.MustCompile(`\s*\([^()]*@[^()]*\)`)
 	reSeparador = regexp.MustCompile(`\s+[-–—|]\s+`)
 )
 
@@ -86,6 +88,7 @@ func sitioDeTitulo(proceso, titulo string) string {
 	}
 	sitio := strings.TrimSpace(partes[len(partes)-1])
 	sitio = reContador.ReplaceAllString(sitio, "")
+	sitio = strings.TrimSpace(reCorreo.ReplaceAllString(sitio, ""))
 	if paginasVacias[strings.ToLower(sitio)] {
 		return ""
 	}

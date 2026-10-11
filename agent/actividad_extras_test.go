@@ -20,6 +20,7 @@ func TestSitioDeTitulo(t *testing.T) {
 		{"chrome.exe", "(21) Flova AI tutorial - YouTube - Google Chrome", "YouTube"},
 		{"firefox", "Pull requests — Mozilla Firefox", "Pull requests"},
 		{"msedge.exe", "Outlook - Microsoft​ Edge", "Outlook"},
+		{"chrome", "(108 sin leer) - Bandeja de entrada - Zoho Mail (ana@acme.cl) - Google Chrome", "Zoho Mail"},
 		{"chrome", "Nueva pestaña - Google Chrome", ""},
 		{"mstsc.exe", "10.20.0.247 - Conexión a Escritorio remoto", ""},
 		{"chrome", "", ""},
