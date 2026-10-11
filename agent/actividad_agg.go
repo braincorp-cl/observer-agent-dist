@@ -35,6 +35,15 @@ type usuarioAcc struct {
 	Horas    map[string]*horaAcc `json:"horas"`
 	Procs    map[string]int      `json:"procs"`
 	Titulos  map[string]int      `json:"titulos"`
+	// 049-C
+	Sitios map[string]int     `json:"sitios,omitempty"`
+	Red    map[string]*redAcc `json:"red,omitempty"`
+}
+
+type redAcc struct {
+	Seg      int             `json:"seg"`
+	ConexMax int             `json:"conex_max"`
+	Destinos map[string]bool `json:"destinos"`
 }
 
 // AcumuladorActividad es el estado agregado persistible del día(s) en curso.
@@ -90,10 +99,53 @@ func (ac *AcumuladorActividad) Agregar(ts time.Time, usuario, proceso, titulo st
 		}
 		if titulo != "" {
 			u.Titulos[titulo] += intervaloSeg
+			if sitio := sitioDeTitulo(proceso, titulo); sitio != "" {
+				if u.Sitios == nil {
+					u.Sitios = map[string]int{}
+				}
+				u.Sitios[sitio] += intervaloSeg
+			}
 		}
 	} else {
 		u.Inactivo += intervaloSeg
 		h.I += intervaloSeg
+	}
+}
+
+// AgregarRed suma la foto de red de una muestra al usuario de esa muestra
+// (049-C). Se cuenta aunque el usuario esté inactivo: el tráfico de fondo
+// también es uso de red.
+func (ac *AcumuladorActividad) AgregarRed(ts time.Time, usuario string, foto map[string]appRed, intervaloSeg int) {
+	if intervaloSeg <= 0 || len(foto) == 0 {
+		return
+	}
+	du := ac.Dias[ts.Format("2006-01-02")]
+	if du == nil {
+		return
+	}
+	u := du[usuario]
+	if u == nil {
+		return
+	}
+	if u.Red == nil {
+		u.Red = map[string]*redAcc{}
+	}
+	for app, r := range foto {
+		acc := u.Red[app]
+		if acc == nil {
+			acc = &redAcc{Destinos: map[string]bool{}}
+			u.Red[app] = acc
+		}
+		acc.Seg += intervaloSeg
+		if r.Conex > acc.ConexMax {
+			acc.ConexMax = r.Conex
+		}
+		for _, d := range r.Destinos {
+			if len(acc.Destinos) >= maxDestinosPorApp {
+				break
+			}
+			acc.Destinos[d] = true
+		}
 	}
 }
 
@@ -137,6 +189,8 @@ func (ac *AcumuladorActividad) ResumenDe(fecha string, parcial bool) (rmm.Activi
 			Horas:       horas,
 			Procs:       topMapMin(u.Procs, topProcsResumen),
 			TitulosTop:  topTitulos(u.Titulos, topTitulosResumen),
+			Sitios:      topMapMin(u.Sitios, topSitiosResumen),
+			Red:         resumenRed(u.Red, topRedResumen),
 		})
 	}
 	return rmm.ActividadResumen{V: 1, SO: ac.SO, Equipo: ac.Equipo, Dias: []rmm.ActividadDia{dia}}, true
@@ -196,6 +250,22 @@ func topTitulos(m map[string]int, n int) [][]interface{} {
 	out := [][]interface{}{}
 	for i := 0; i < len(arr) && i < n; i++ {
 		out = append(out, []interface{}{arr[i].k, redondearMin(arr[i].v)})
+	}
+	return out
+}
+
+func resumenRed(m map[string]*redAcc, n int) map[string]rmm.ActividadRedApp {
+	if len(m) == 0 {
+		return nil
+	}
+	seg := map[string]int{}
+	for k, v := range m {
+		seg[k] = v.Seg
+	}
+	out := map[string]rmm.ActividadRedApp{}
+	for app, min := range topMapMin(seg, n) {
+		r := m[app]
+		out[app] = rmm.ActividadRedApp{Min: min, ConexMax: r.ConexMax, Destinos: len(r.Destinos)}
 	}
 	return out
 }

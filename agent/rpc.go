@@ -772,6 +772,8 @@ func (a *Agent) RunRPC() {
 				// clamp y el default viven en SetActividad.
 				intervalSeg, _ := strconv.Atoi(p.Data["interval_seg"])
 				inactivoSeg, _ := strconv.Atoi(p.Data["inactivo_seg"])
+				capturasMin, _ := strconv.Atoi(p.Data["capturas_min"])
+				a.SetActividadExtras(capturasMin, natsBoolFlag(p.Data["red"]))
 				a.SetActividad(natsBoolFlag(p.Data["active"]), intervalSeg, inactivoSeg, natsBoolFlag(p.Data["con_titulo"]))
 				ret.Encode(RespOK)
 				msg.Respond(resp)

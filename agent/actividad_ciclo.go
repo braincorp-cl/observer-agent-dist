@@ -136,6 +136,7 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 
 	ultimaSubida := time.Now()
 	diaActual := time.Now().Format("2006-01-02")
+	var ultimaCaptura time.Time
 
 	for {
 		select {
@@ -157,10 +158,23 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 			activo := m.Error == "" && m.IdleSeg >= 0 && m.IdleSeg < inactivo && !m.Bloqueado && procesoReal(m.Proceso)
 			ahora := time.Now()
 
+			capturasMin, red := a.getActividadExtras()
+			var fotoRed map[string]appRed
+			if red {
+				fotoRed = muestraRedPorApp()
+			}
+
 			actAccMu.Lock()
 			actAcc.Agregar(ahora, m.Usuario, m.Proceso, m.Titulo, activo, interval)
+			actAcc.AgregarRed(ahora, m.Usuario, fotoRed, interval)
 			a.guardarAcumulador(actAcc)
 			actAccMu.Unlock()
+
+			// 049-C: captura periódica, sólo con el usuario activo.
+			if capturasMin > 0 && activo && ahora.Sub(ultimaCaptura) >= time.Duration(capturasMin)*time.Minute {
+				ultimaCaptura = ahora
+				go a.capturaActividad(m)
+			}
 
 			// Cierre de día: subir el día recién cerrado y purgar.
 			if hoy := ahora.Format("2006-01-02"); hoy != diaActual {

@@ -1159,6 +1159,19 @@ type ActividadUsuario struct {
 	Horas       map[string]ActividadHora `json:"horas"`
 	Procs       map[string]int           `json:"procs"`
 	TitulosTop  [][]interface{}          `json:"titulos_top"`
+	// 049-C: minutos por sitio web (deducido del título del navegador) y uso de
+	// red por aplicación. Ausentes en agentes anteriores.
+	Sitios map[string]int             `json:"sitios,omitempty"`
+	Red    map[string]ActividadRedApp `json:"red,omitempty"`
+}
+
+// ActividadRedApp: uso de red de una aplicación en el día (049-C). Min = minutos
+// con al menos una conexión establecida; ConexMax = pico de conexiones
+// simultáneas; Destinos = direcciones remotas distintas.
+type ActividadRedApp struct {
+	Min      int `json:"min"`
+	ConexMax int `json:"conex_max"`
+	Destinos int `json:"destinos"`
 }
 
 type ActividadDia struct {

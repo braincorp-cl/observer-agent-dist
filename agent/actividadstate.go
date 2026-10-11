@@ -18,6 +18,10 @@ const (
 	actMaxIntervalSeg     = 600
 	actDefaultIntervalSeg = 60
 	actDefaultInactivoSeg = 120
+	// Las capturas tienen piso propio: una foto de la pantalla de una persona
+	// cada pocos segundos sería vigilancia en video, no un muestreo.
+	actMinCapturasMin = 1
+	actMaxCapturasMin = 240
 )
 
 type persistedActividad struct {
@@ -25,6 +29,11 @@ type persistedActividad struct {
 	IntervalSeg int  `json:"interval_seg"`
 	InactivoSeg int  `json:"inactivo_seg"`
 	ConTitulo   bool `json:"con_titulo"`
+	// 049-C: cada cuántos minutos se sube una captura de pantalla (0 = nunca) y
+	// si se mide el uso de red por aplicación. Apagados por omisión: un servidor
+	// viejo no los manda y el agente no captura ni mide red.
+	CapturasMin int  `json:"capturas_min,omitempty"`
+	Red         bool `json:"red,omitempty"`
 }
 
 var (
@@ -33,6 +42,8 @@ var (
 	actIntervalSeg = actDefaultIntervalSeg
 	actInactivoSeg = actDefaultInactivoSeg
 	actConTitulo   bool
+	actCapturasMin int
+	actRed         bool
 
 	actChanged     = make(chan struct{}, 1)
 	actDirOverride string
@@ -135,7 +146,7 @@ func (a *Agent) SetActividad(active bool, intervalSeg, inactivoSeg int, conTitul
 		return
 	}
 	signalActividadChanged()
-	a.saveActividadCfg(persistedActividad{Active: active, IntervalSeg: interval, InactivoSeg: inact, ConTitulo: conTitulo})
+	a.saveActividadCfg(a.estadoActividadPersistible())
 	if active {
 		a.Logger.Infoln("SetActividad: monitoreo ENCENDIDO, cadencia", interval, "s, umbral inactividad", inact, "s")
 	} else {
@@ -157,6 +168,8 @@ func (a *Agent) ResumeActividad() {
 		actInactivoSeg = st.InactivoSeg
 	}
 	actConTitulo = st.ConTitulo
+	actCapturasMin = clampCapturasMin(st.CapturasMin)
+	actRed = st.Red
 	actMu.Unlock()
 	a.Logger.Infoln("ResumeActividad: el monitoreo seguía ENCENDIDO, cadencia", actIntervalSeg, "s")
 }
@@ -166,5 +179,57 @@ func (a *Agent) ResumeActividad() {
 // la config vino de verdad del servidor (fromServer): con el repliegue todos los
 // campos son ceros y apagarían el muestreo por una caída de red.
 func (a *Agent) aplicarActividadDeConfig(conf AgentCheckInConfig) {
+	a.SetActividadExtras(conf.ActividadCapturasMin, conf.ActividadRed)
 	a.SetActividad(conf.ActividadActive, conf.ActividadIntervalSeg, conf.ActividadInactivoSeg, conf.ActividadConTitulo)
+}
+
+func clampCapturasMin(m int) int {
+	if m <= 0 {
+		return 0
+	}
+	if m < actMinCapturasMin {
+		return actMinCapturasMin
+	}
+	if m > actMaxCapturasMin {
+		return actMaxCapturasMin
+	}
+	return m
+}
+
+func (a *Agent) estadoActividadPersistible() persistedActividad {
+	actMu.RLock()
+	defer actMu.RUnlock()
+	return persistedActividad{
+		Active:      actActive,
+		IntervalSeg: actIntervalSeg,
+		InactivoSeg: actInactivoSeg,
+		ConTitulo:   actConTitulo,
+		CapturasMin: actCapturasMin,
+		Red:         actRed,
+	}
+}
+
+// getActividadExtras devuelve la cadencia de capturas (min, 0 = apagadas) y si
+// se mide la red por aplicación (049-C).
+func (a *Agent) getActividadExtras() (capturasMin int, red bool) {
+	actMu.RLock()
+	defer actMu.RUnlock()
+	return actCapturasMin, actRed
+}
+
+// SetActividadExtras fija capturas y red (049-C). Se llama ANTES de SetActividad
+// para que la persistencia que hace aquel ya incluya estos valores; si sólo
+// cambian estos, persiste por su cuenta.
+func (a *Agent) SetActividadExtras(capturasMin int, red bool) {
+	c := clampCapturasMin(capturasMin)
+	actMu.Lock()
+	cambio := actCapturasMin != c || actRed != red
+	actCapturasMin = c
+	actRed = red
+	actMu.Unlock()
+	if !cambio {
+		return
+	}
+	a.saveActividadCfg(a.estadoActividadPersistible())
+	a.Logger.Infoln("SetActividadExtras: capturas cada", c, "min (0 = apagadas), red por app:", red)
 }
