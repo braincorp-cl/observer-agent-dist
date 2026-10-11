@@ -122,6 +122,11 @@ func (a *Agent) AgentSvc(nc *nats.Conn) {
 		signalLostModeChanged()
 	}
 
+	// Feature 049: restaura el estado del monitoreo de actividad y lanza su
+	// goroutine de muestreo (separada del bucle de geo para no tocar ese select).
+	a.ResumeActividad()
+	go a.BucleActividad(nc)
+
 	// Feature 030 · Fase 2 · T016b/T016c. Va acá, en el arranque del servicio,
 	// porque los dos momentos en que hay que pedir permisos de macOS terminan
 	// pasando por un arranque: la instalación (que deja una marca) y el

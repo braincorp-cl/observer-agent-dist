@@ -749,6 +749,34 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
+		case "actividad":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// Muestra instantánea para diagnóstico/consola. Corre en la sesión
+				// del usuario (self-exec), que es donde se ve la ventana y la idle.
+				m, err := a.MuestraActividadComoUsuario(p.Data["titulo"] == "1")
+				if err != nil {
+					m.Error = err.Error()
+				}
+				ret.Encode(m)
+				msg.Respond(resp)
+			}(payload)
+
+		case "actividad_monitor":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// Enciende/apaga/configura el muestreo. Mismo contrato que lost_mode:
+				// los valores también llegan por el polling de config, así que el
+				// clamp y el default viven en SetActividad.
+				intervalSeg, _ := strconv.Atoi(p.Data["interval_seg"])
+				inactivoSeg, _ := strconv.Atoi(p.Data["inactivo_seg"])
+				a.SetActividad(natsBoolFlag(p.Data["active"]), intervalSeg, inactivoSeg, natsBoolFlag(p.Data["con_titulo"]))
+				ret.Encode(RespOK)
+				msg.Respond(resp)
+			}(payload)
+
 		case "fileretrieval":
 			go func(p *NatsMsg) {
 				var resp []byte

@@ -118,6 +118,10 @@ func main() {
 		a.UninstallCleanup()
 	case "publicip":
 		fmt.Println(a.PublicIP())
+	case "actividad-muestra":
+		// Feature 049: muestra instantánea de actividad. Corre como el usuario
+		// (self-exec). flag.Arg(0) == "titulo" pide además el título de la ventana.
+		agent.ModoActividadMuestra(flag.Arg(0) == "titulo")
 	case "geolocation":
 		// Diagnóstico: resuelve y muestra la ubicación con la config vigente.
 		a.RunGeolocation()

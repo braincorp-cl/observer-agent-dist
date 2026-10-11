@@ -1119,3 +1119,58 @@ func FileExists(path string) bool {
 	}
 	return true
 }
+
+// ActividadMuestra es una muestra instantánea de actividad del equipo (feature 049).
+// La produce el agente de forma nativa (sin binarios del SO) corriendo en el
+// contexto de la sesión del usuario, y la consume el muestreo periódico y el
+// modo de diagnóstico `-m actividad-muestra`.
+type ActividadMuestra struct {
+	TS        string `json:"ts"`                // RFC3339 local
+	SO        string `json:"so"`                // windows/macos/linux
+	Sesion    string `json:"sesion_tipo"`       // x11/wayland/aqua/windows/""
+	Usuario   string `json:"usuario,omitempty"` // usuario de la sesión muestreada
+	Proceso   string `json:"proceso"`           // ejecutable en primer plano, minúsculas
+	Titulo    string `json:"titulo,omitempty"`  // título de la ventana activa (si se pidió)
+	PID       int    `json:"pid,omitempty"`
+	IdleSeg   int    `json:"idle_seg"`       // segundos desde la última entrada; -1 si no medible
+	Bloqueado bool   `json:"bloqueado"`      // sesión bloqueada / salvapantallas activo
+	Nota      string `json:"nota,omitempty"` // p. ej. "wayland: ventana activa no disponible"
+	Error     string `json:"error,omitempty"`
+}
+
+// --- Feature 049 · resumen de actividad que sube el agente -------------------
+// Es el MISMO formato JSON que consumen los filtros de reporte actividad_dia /
+// actividad_rango (Fase 1), para que esos reportes sirvan sin cambios.
+
+type ActividadHora struct {
+	A int            `json:"a"`           // minutos activos en la hora
+	I int            `json:"i"`           // minutos inactivos
+	P map[string]int `json:"p,omitempty"` // minutos por proceso en la hora
+}
+
+type ActividadUsuario struct {
+	Usuario     string                   `json:"usuario"`
+	Primero     string                   `json:"primero"`
+	Ultimo      string                   `json:"ultimo"`
+	ActivoMin   int                      `json:"activo_min"`
+	InactivoMin int                      `json:"inactivo_min"`
+	HuecosMin   int                      `json:"huecos_min"`
+	Capturas    int                      `json:"capturas"`
+	Horas       map[string]ActividadHora `json:"horas"`
+	Procs       map[string]int           `json:"procs"`
+	TitulosTop  [][]interface{}          `json:"titulos_top"`
+}
+
+type ActividadDia struct {
+	Fecha    string             `json:"fecha"`
+	TZ       string             `json:"tz"`
+	Usuarios []ActividadUsuario `json:"usuarios"`
+	Parcial  bool               `json:"parcial,omitempty"`
+}
+
+type ActividadResumen struct {
+	V      int            `json:"v"`
+	SO     string         `json:"so"`
+	Equipo string         `json:"equipo"`
+	Dias   []ActividadDia `json:"dias"`
+}
