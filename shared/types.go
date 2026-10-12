@@ -1163,6 +1163,23 @@ type ActividadUsuario struct {
 	// red por aplicación. Ausentes en agentes anteriores.
 	Sitios map[string]int             `json:"sitios,omitempty"`
 	Red    map[string]ActividadRedApp `json:"red,omitempty"`
+	// 049-D: tramos de 10 min ("0".."143") -> [seg activos, seg muestreados];
+	// jornada por entrada real (primera/última entrada del día) y pausas sin
+	// entrada de 10 min o más, como ["HH:MM","HH:MM"]. Ausentes en agentes anteriores.
+	Tramos       map[string][2]int `json:"tramos,omitempty"`
+	PrimerActivo string            `json:"primer_activo,omitempty"`
+	UltimoActivo string            `json:"ultimo_activo,omitempty"`
+	Pausas       [][2]string       `json:"pausas,omitempty"`
+}
+
+// ActividadHueco: tramo del día sin muestreo con el monitoreo encendido (049-D).
+// Motivo "suspendido" = el agente siguió vivo pero el reloj saltó (suspensión o
+// hibernación); "apagado" = el servicio no corrió (equipo apagado o agente
+// detenido). Un tramo sin muestras y sin hueco es "sin datos".
+type ActividadHueco struct {
+	Desde  string `json:"desde"`
+	Hasta  string `json:"hasta"`
+	Motivo string `json:"motivo"`
 }
 
 // ActividadRedApp: uso de red de una aplicación en el día (049-C). Min = minutos
@@ -1179,6 +1196,7 @@ type ActividadDia struct {
 	TZ       string             `json:"tz"`
 	Usuarios []ActividadUsuario `json:"usuarios"`
 	Parcial  bool               `json:"parcial,omitempty"`
+	Huecos   []ActividadHueco   `json:"huecos,omitempty"` // 049-D
 }
 
 type ActividadResumen struct {

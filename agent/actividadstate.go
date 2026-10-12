@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -34,6 +36,9 @@ type persistedActividad struct {
 	// viejo no los manda y el agente no captura ni mide red.
 	CapturasMin int  `json:"capturas_min,omitempty"`
 	Red         bool `json:"red,omitempty"`
+	// 049-D: patrones (regex, sin distinguir mayúsculas) de proceso o título que
+	// cuentan como actividad aunque no haya teclado ni mouse (reuniones).
+	SiempreActivo []string `json:"siempre_activo,omitempty"`
 }
 
 var (
@@ -44,6 +49,8 @@ var (
 	actConTitulo   bool
 	actCapturasMin int
 	actRed         bool
+	actSiempre     []string
+	actSiempreRe   []*regexp.Regexp
 
 	actChanged     = make(chan struct{}, 1)
 	actDirOverride string
@@ -170,6 +177,7 @@ func (a *Agent) ResumeActividad() {
 	actConTitulo = st.ConTitulo
 	actCapturasMin = clampCapturasMin(st.CapturasMin)
 	actRed = st.Red
+	actSiempre, actSiempreRe = compilarSiempreActivo(st.SiempreActivo)
 	actMu.Unlock()
 	a.Logger.Infoln("ResumeActividad: el monitoreo seguía ENCENDIDO, cadencia", actIntervalSeg, "s")
 }
@@ -179,6 +187,7 @@ func (a *Agent) ResumeActividad() {
 // la config vino de verdad del servidor (fromServer): con el repliegue todos los
 // campos son ceros y apagarían el muestreo por una caída de red.
 func (a *Agent) aplicarActividadDeConfig(conf AgentCheckInConfig) {
+	a.SetActividadSiempreActivo(conf.ActividadSiempreActivo)
 	a.SetActividadExtras(conf.ActividadCapturasMin, conf.ActividadRed)
 	a.SetActividad(conf.ActividadActive, conf.ActividadIntervalSeg, conf.ActividadInactivoSeg, conf.ActividadConTitulo)
 }
@@ -200,12 +209,13 @@ func (a *Agent) estadoActividadPersistible() persistedActividad {
 	actMu.RLock()
 	defer actMu.RUnlock()
 	return persistedActividad{
-		Active:      actActive,
-		IntervalSeg: actIntervalSeg,
-		InactivoSeg: actInactivoSeg,
-		ConTitulo:   actConTitulo,
-		CapturasMin: actCapturasMin,
-		Red:         actRed,
+		Active:        actActive,
+		IntervalSeg:   actIntervalSeg,
+		InactivoSeg:   actInactivoSeg,
+		ConTitulo:     actConTitulo,
+		CapturasMin:   actCapturasMin,
+		Red:           actRed,
+		SiempreActivo: actSiempre,
 	}
 }
 
@@ -232,4 +242,58 @@ func (a *Agent) SetActividadExtras(capturasMin int, red bool) {
 	}
 	a.saveActividadCfg(a.estadoActividadPersistible())
 	a.Logger.Infoln("SetActividadExtras: capturas cada", c, "min (0 = apagadas), red por app:", red)
+}
+
+// --- 049-D · patrones "siempre activo" ---------------------------------------
+
+const (
+	maxPatronesSiempre = 30
+	maxLargoPatron     = 200
+)
+
+// compilarSiempreActivo limpia y compila los patrones. Uno inválido (o con
+// sintaxis que RE2 no acepta) se descarta sin tumbar a los demás.
+func compilarSiempreActivo(patrones []string) ([]string, []*regexp.Regexp) {
+	var ok []string
+	var res []*regexp.Regexp
+	for _, p := range patrones {
+		p = strings.TrimSpace(p)
+		if p == "" || len(p) > maxLargoPatron || len(ok) >= maxPatronesSiempre {
+			continue
+		}
+		re, err := regexp.Compile("(?i)" + p)
+		if err != nil {
+			continue
+		}
+		ok = append(ok, p)
+		res = append(res, re)
+	}
+	return ok, res
+}
+
+// SetActividadSiempreActivo fija los patrones y persiste si cambiaron. Se llama
+// antes de SetActividad, igual que SetActividadExtras.
+func (a *Agent) SetActividadSiempreActivo(patrones []string) {
+	ok, res := compilarSiempreActivo(patrones)
+	actMu.Lock()
+	cambio := strings.Join(actSiempre, "\n") != strings.Join(ok, "\n")
+	actSiempre, actSiempreRe = ok, res
+	actMu.Unlock()
+	if !cambio {
+		return
+	}
+	a.saveActividadCfg(a.estadoActividadPersistible())
+	a.Logger.Infoln("SetActividadSiempreActivo:", len(ok), "patrones")
+}
+
+// esSiempreActivo dice si el proceso o el título coinciden con algún patrón.
+func esSiempreActivo(proceso, titulo string) bool {
+	actMu.RLock()
+	defer actMu.RUnlock()
+	for _, re := range actSiempreRe {
+		if re.MatchString(proceso) || (titulo != "" && re.MatchString(titulo)) {
+			return true
+		}
+	}
+	return false
 }

@@ -175,6 +175,11 @@ func TestGetCheckInConfFromAPICopiaTodosLosCampos(t *testing.T) {
 			cuerpo[etiqueta] = 7
 		case reflect.String:
 			cuerpo[etiqueta] = "algo"
+		case reflect.Slice:
+			if campo.Type.Elem().Kind() != reflect.String {
+				t.Fatalf("campo %s de tipo %s no contemplado en este test", campo.Name, campo.Type)
+			}
+			cuerpo[etiqueta] = []string{"algo"}
 		default:
 			t.Fatalf("campo %s de tipo %s no contemplado en este test", campo.Name, campo.Type)
 		}

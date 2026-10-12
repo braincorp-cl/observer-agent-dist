@@ -92,6 +92,8 @@ type AgentCheckInConfig struct {
 	// 049-C: capturas periódicas (min, 0 = apagadas) y red por aplicación.
 	ActividadCapturasMin int  `json:"actividad_capturas_min"`
 	ActividadRed         bool `json:"actividad_red"`
+	// 049-D: patrones "siempre activo" (reuniones). Servidor viejo = sin patrones.
+	ActividadSiempreActivo []string `json:"actividad_siempre_activo"`
 	// fromServer distingue una config REAL de la del repliegue. Sin exportar y
 	// sin etiqueta JSON: no viaja por la red, lo pone GetCheckInConfFromAPI.
 	// Existe por el modo perdido — ver el comentario en checkInConfFallback.

@@ -9,6 +9,7 @@ package agent
 
 import (
 	"sort"
+	"strconv"
 	"time"
 
 	rmm "github.com/braincorp-cl/observer-agent-dist/shared"
@@ -18,6 +19,11 @@ const (
 	topProcsResumen   = 25
 	topHoraResumen    = 5
 	topTitulosResumen = 10
+	// 049-D
+	tramosPorDia = 144 // tramos de 10 min
+	pausaMinSeg  = 600 // sin entrada 10 min o más = pausa
+	maxPausasDia = 60
+	maxHuecosDia = 60
 )
 
 type horaAcc struct {
@@ -38,6 +44,18 @@ type usuarioAcc struct {
 	// 049-C
 	Sitios map[string]int     `json:"sitios,omitempty"`
 	Red    map[string]*redAcc `json:"red,omitempty"`
+	// 049-D: tramo de 10 min -> [seg activos, seg muestreados]; jornada por
+	// entrada real (epoch) y pausas [desde, hasta].
+	Tramos        map[int][2]int `json:"tramos,omitempty"`
+	PrimerEntrada int64          `json:"primer_entrada,omitempty"`
+	UltimaEntrada int64          `json:"ultima_entrada,omitempty"`
+	Pausas        [][2]int64     `json:"pausas,omitempty"`
+}
+
+type huecoAcc struct {
+	Desde  int64  `json:"desde"`
+	Hasta  int64  `json:"hasta"`
+	Motivo string `json:"motivo"`
 }
 
 type redAcc struct {
@@ -53,6 +71,29 @@ type AcumuladorActividad struct {
 	TZ     string `json:"tz"`
 	// Dias: fecha "AAAA-MM-DD" -> usuario -> acumulado.
 	Dias map[string]map[string]*usuarioAcc `json:"dias"`
+	// 049-D: huecos de muestreo por fecha y hora de la última muestra tomada con
+	// el monitoreo encendido (epoch; 0 = sin referencia). Persisten para detectar
+	// el hueco de un equipo apagado al volver a arrancar.
+	Huecos        map[string][]huecoAcc `json:"huecos,omitempty"`
+	UltimaMuestra int64                 `json:"ultima_muestra,omitempty"`
+}
+
+func tramoDe(ts time.Time) int {
+	return ts.Hour()*6 + ts.Minute()/10
+}
+
+func inicioDelDia(ts time.Time) time.Time {
+	y, m, d := ts.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, ts.Location())
+}
+
+func restar(m map[string]int, k string, v int) {
+	if m == nil || k == "" {
+		return
+	}
+	if m[k] -= v; m[k] <= 0 {
+		delete(m, k)
+	}
 }
 
 func nuevoAcumulador(equipo, so, tz string) *AcumuladorActividad {
@@ -90,6 +131,15 @@ func (ac *AcumuladorActividad) Agregar(ts time.Time, usuario, proceso, titulo st
 		h = &horaAcc{P: map[string]int{}}
 		u.Horas[hh] = h
 	}
+	if u.Tramos == nil {
+		u.Tramos = map[int][2]int{}
+	}
+	tr := u.Tramos[tramoDe(ts)]
+	tr[1] += intervaloSeg
+	if activo {
+		tr[0] += intervaloSeg
+	}
+	u.Tramos[tramoDe(ts)] = tr
 	if activo {
 		u.Activo += intervaloSeg
 		h.A += intervaloSeg
@@ -110,6 +160,92 @@ func (ac *AcumuladorActividad) Agregar(ts time.Time, usuario, proceso, titulo st
 		u.Inactivo += intervaloSeg
 		h.I += intervaloSeg
 	}
+}
+
+// Reclasificar pasa a inactiva una muestra que se contó activa (049-D). Lo usa
+// el ciclo cuando, al cruzar el umbral de inactividad, se sabe que la última
+// entrada fue ANTES de esa muestra: estaba activa sólo porque el idle aún no
+// llegaba al umbral. Deshace exactamente lo que Agregar sumó como activo.
+func (ac *AcumuladorActividad) Reclasificar(ts time.Time, usuario, proceso, titulo string, intervaloSeg int) {
+	u := ac.Dias[ts.Format("2006-01-02")][usuario]
+	if u == nil || intervaloSeg <= 0 {
+		return
+	}
+	seg := intervaloSeg
+	if seg > u.Activo {
+		seg = u.Activo
+	}
+	if seg <= 0 {
+		return
+	}
+	u.Activo -= seg
+	u.Inactivo += seg
+	if h := u.Horas[ts.Format("15")]; h != nil {
+		h.A -= seg
+		if h.A < 0 {
+			h.A = 0
+		}
+		h.I += seg
+		restar(h.P, proceso, seg)
+	}
+	restar(u.Procs, proceso, seg)
+	if titulo != "" {
+		restar(u.Titulos, titulo, seg)
+		restar(u.Sitios, sitioDeTitulo(proceso, titulo), seg)
+	}
+	if tr, ok := u.Tramos[tramoDe(ts)]; ok {
+		tr[0] -= seg
+		if tr[0] < 0 {
+			tr[0] = 0
+		}
+		u.Tramos[tramoDe(ts)] = tr
+	}
+}
+
+// RegistrarEntrada anota la hora de la última entrada real del usuario
+// (049-D): `ts` es la hora de la muestra y `entrada` = ts − idle. Con eso arma
+// la jornada (primera y última entrada) y las pausas: un salto de pausaMinSeg o
+// más entre dos entradas consecutivas. No depende de la reclasificación.
+func (ac *AcumuladorActividad) RegistrarEntrada(ts time.Time, usuario string, entrada time.Time) {
+	u := ac.Dias[ts.Format("2006-01-02")][usuario]
+	if u == nil {
+		return
+	}
+	if dia := inicioDelDia(ts); entrada.Before(dia) {
+		entrada = dia
+	}
+	if entrada.After(ts) {
+		entrada = ts
+	}
+	e := entrada.Unix()
+	if u.UltimaEntrada > 0 && e-u.UltimaEntrada >= pausaMinSeg && len(u.Pausas) < maxPausasDia {
+		u.Pausas = append(u.Pausas, [2]int64{u.UltimaEntrada, e})
+	}
+	if e > u.UltimaEntrada {
+		u.UltimaEntrada = e
+	}
+	if u.PrimerEntrada == 0 || e < u.PrimerEntrada {
+		u.PrimerEntrada = e
+	}
+}
+
+// RegistrarHueco anota un tramo sin muestreo (049-D). Si cruza la medianoche
+// se recorta al día de `hasta`: el día anterior ya se cerró y se subió.
+func (ac *AcumuladorActividad) RegistrarHueco(desde, hasta time.Time, motivo string) {
+	if dia := inicioDelDia(hasta); desde.Before(dia) {
+		desde = dia
+	}
+	if !hasta.After(desde) {
+		return
+	}
+	if ac.Huecos == nil {
+		ac.Huecos = map[string][]huecoAcc{}
+	}
+	fecha := hasta.Format("2006-01-02")
+	if len(ac.Huecos[fecha]) >= maxHuecosDia {
+		return
+	}
+	ac.Huecos[fecha] = append(ac.Huecos[fecha], huecoAcc{Desde: desde.Unix(), Hasta: hasta.Unix(), Motivo: motivo})
 }
 
 // AgregarRed suma la foto de red de una muestra al usuario de esa muestra
@@ -179,19 +315,26 @@ func (ac *AcumuladorActividad) ResumenDe(fecha string, parcial bool) (rmm.Activi
 			horas[hh] = rmm.ActividadHora{A: redondearMin(h.A), I: redondearMin(h.I), P: topMapMin(h.P, topHoraResumen)}
 		}
 		dia.Usuarios = append(dia.Usuarios, rmm.ActividadUsuario{
-			Usuario:     n,
-			Primero:     time.Unix(u.Primero, 0).Format("15:04"),
-			Ultimo:      time.Unix(u.Ultimo, 0).Format("15:04"),
-			ActivoMin:   redondearMin(u.Activo),
-			InactivoMin: redondearMin(u.Inactivo),
-			HuecosMin:   0, // el servicio no tiene huecos por diseño
-			Capturas:    u.Capturas,
-			Horas:       horas,
-			Procs:       topMapMin(u.Procs, topProcsResumen),
-			TitulosTop:  topTitulos(u.Titulos, topTitulosResumen),
-			Sitios:      topMapMin(u.Sitios, topSitiosResumen),
-			Red:         resumenRed(u.Red, topRedResumen),
+			Usuario:      n,
+			Primero:      time.Unix(u.Primero, 0).Format("15:04"),
+			Ultimo:       time.Unix(u.Ultimo, 0).Format("15:04"),
+			ActivoMin:    redondearMin(u.Activo),
+			InactivoMin:  redondearMin(u.Inactivo),
+			HuecosMin:    0, // el servicio no tiene huecos por diseño
+			Capturas:     u.Capturas,
+			Horas:        horas,
+			Procs:        topMapMin(u.Procs, topProcsResumen),
+			TitulosTop:   topTitulos(u.Titulos, topTitulosResumen),
+			Sitios:       topMapMin(u.Sitios, topSitiosResumen),
+			Red:          resumenRed(u.Red, topRedResumen),
+			Tramos:       resumenTramos(u.Tramos),
+			PrimerActivo: horaMin(u.PrimerEntrada),
+			UltimoActivo: horaMin(u.UltimaEntrada),
+			Pausas:       resumenIntervalos(u.Pausas),
 		})
+	}
+	for _, h := range ac.Huecos[fecha] {
+		dia.Huecos = append(dia.Huecos, rmm.ActividadHueco{Desde: horaMin(h.Desde), Hasta: horaMin(h.Hasta), Motivo: h.Motivo})
 	}
 	return rmm.ActividadResumen{V: 1, SO: ac.SO, Equipo: ac.Equipo, Dias: []rmm.ActividadDia{dia}}, true
 }
@@ -204,6 +347,42 @@ func (ac *AcumuladorActividad) PurgarAnteriores(fecha string) {
 			delete(ac.Dias, f)
 		}
 	}
+	for f := range ac.Huecos {
+		if f < fecha {
+			delete(ac.Huecos, f)
+		}
+	}
+}
+
+func horaMin(epoch int64) string {
+	if epoch <= 0 {
+		return ""
+	}
+	return time.Unix(epoch, 0).Format("15:04")
+}
+
+func resumenTramos(m map[int][2]int) map[string][2]int {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][2]int, len(m))
+	for i, v := range m {
+		if i >= 0 && i < tramosPorDia && v[1] > 0 {
+			out[strconv.Itoa(i)] = v
+		}
+	}
+	return out
+}
+
+func resumenIntervalos(p [][2]int64) [][2]string {
+	if len(p) == 0 {
+		return nil
+	}
+	out := make([][2]string, 0, len(p))
+	for _, x := range p {
+		out = append(out, [2]string{horaMin(x[0]), horaMin(x[1])})
+	}
+	return out
 }
 
 func redondearMin(seg int) int {

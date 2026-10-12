@@ -139,6 +139,11 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 	ultimaSubida := time.Now()
 	diaActual := time.Now().Format("2006-01-02")
 	var ultimaCaptura time.Time
+	// 049-D: muestras recientes contadas activas sólo por el umbral de idle, por
+	// si hay que reclasificarlas, y si es la primera vuelta tras arrancar (un
+	// hueco desde la última muestra persistida = equipo apagado).
+	var recientes []muestraReciente
+	primeraVuelta := true
 
 	for {
 		select {
@@ -150,15 +155,21 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 		case <-ticker.C:
 			active, interval, inactivo, conTitulo := a.getActividad()
 			if !active {
+				recientes = nil
+				a.olvidarUltimaMuestra()
 				continue
 			}
+			ahora := time.Now()
+			a.anotarHueco(ahora, interval, primeraVuelta)
+			primeraVuelta = false
+
 			m, err := a.MuestraActividadComoUsuario(conTitulo)
 			if err != nil {
 				a.Logger.Debugln("actividad: no se pudo muestrear:", err)
 				continue
 			}
-			activo := m.Error == "" && m.IdleSeg >= 0 && m.IdleSeg < inactivo && !m.Bloqueado && procesoReal(m.Proceso)
-			ahora := time.Now()
+			ev := evaluarMuestra(m, inactivo)
+			activo := ev.activo
 
 			capturasMin, red := a.getActividadExtras()
 			var fotoRed map[string]appRed
@@ -169,6 +180,10 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 			actAccMu.Lock()
 			actAcc.Agregar(ahora, m.Usuario, m.Proceso, m.Titulo, activo, interval)
 			actAcc.AgregarRed(ahora, m.Usuario, fotoRed, interval)
+			if ev.conEntrada {
+				actAcc.RegistrarEntrada(ahora, m.Usuario, ahora.Add(-time.Duration(ev.idleEntrada)*time.Second))
+			}
+			recientes = reclasificarRecientes(actAcc, recientes, m, ev, ahora, interval, inactivo)
 			a.guardarAcumulador(actAcc)
 			actAccMu.Unlock()
 
@@ -195,6 +210,112 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 				ultimaSubida = ahora
 			}
 		}
+	}
+}
+
+// --- 049-D -------------------------------------------------------------------
+
+type muestraReciente struct {
+	ts                       time.Time
+	usuario, proceso, titulo string
+	intervalo                int
+}
+
+type evaluacion struct {
+	activo bool
+	// forzado: activa sólo por un patrón "siempre activo" (reunión).
+	forzado bool
+	// conEntrada: la muestra informa la hora de la última entrada real, que
+	// fue hace idleEntrada segundos (0 si es forzada: la reunión cuenta como
+	// entrada continua).
+	conEntrada  bool
+	idleEntrada int
+	// cruzoUmbral: el idle llegó al umbral; lo contado activo después de la
+	// última entrada no lo era.
+	cruzoUmbral bool
+}
+
+func evaluarMuestra(m rmm.ActividadMuestra, inactivoSeg int) evaluacion {
+	var ev evaluacion
+	sana := m.Error == "" && !m.Bloqueado
+	base := sana && procesoReal(m.Proceso)
+	porIdle := m.IdleSeg >= 0 && m.IdleSeg < inactivoSeg
+	ev.activo = base && porIdle
+	if base && !porIdle && esSiempreActivo(m.Proceso, m.Titulo) {
+		ev.activo, ev.forzado = true, true
+	}
+	switch {
+	case ev.forzado:
+		ev.conEntrada = true
+	case sana && m.IdleSeg >= 0:
+		ev.conEntrada, ev.idleEntrada = true, m.IdleSeg
+	}
+	ev.cruzoUmbral = m.Error == "" && m.IdleSeg >= inactivoSeg && !ev.forzado
+	return ev
+}
+
+// reclasificarRecientes mantiene la ventana de muestras activas-por-umbral y,
+// al cruzar el umbral, pasa a inactivas las posteriores a la última entrada.
+// El llamador tiene tomado actAccMu.
+func reclasificarRecientes(ac *AcumuladorActividad, recientes []muestraReciente, m rmm.ActividadMuestra, ev evaluacion, ahora time.Time, intervalo, inactivoSeg int) []muestraReciente {
+	if ev.cruzoUmbral {
+		ultima := ahora.Add(-time.Duration(m.IdleSeg) * time.Second)
+		hoy := ahora.Format("2006-01-02")
+		for _, r := range recientes {
+			if r.usuario == m.Usuario && r.ts.After(ultima) && r.ts.Format("2006-01-02") == hoy {
+				ac.Reclasificar(r.ts, r.usuario, r.proceso, r.titulo, r.intervalo)
+			}
+		}
+		return nil
+	}
+	if ev.activo && !ev.forzado {
+		recientes = append(recientes, muestraReciente{ts: ahora, usuario: m.Usuario, proceso: m.Proceso, titulo: m.Titulo, intervalo: intervalo})
+	}
+	// Sólo puede reclasificarse lo que está dentro del umbral.
+	limite := ahora.Add(-time.Duration(inactivoSeg+2*intervalo) * time.Second)
+	i := 0
+	for i < len(recientes) && recientes[i].ts.Before(limite) {
+		i++
+	}
+	return recientes[i:]
+}
+
+// umbralHueco: un salto menor es jitter o un reinicio del servicio.
+func umbralHueco(intervaloSeg int) time.Duration {
+	u := time.Duration(3*intervaloSeg) * time.Second
+	if u < 5*time.Minute {
+		u = 5 * time.Minute
+	}
+	return u
+}
+
+// anotarHueco registra el tramo sin muestreo desde la muestra anterior. La
+// resta es con hora de pared (time.Unix no lleva reloj monotónico), que es la
+// que avanza durante una suspensión.
+func (a *Agent) anotarHueco(ahora time.Time, intervaloSeg int, primeraVuelta bool) {
+	actAccMu.Lock()
+	defer actAccMu.Unlock()
+	if actAcc.UltimaMuestra > 0 {
+		prev := time.Unix(actAcc.UltimaMuestra, 0)
+		if ahora.Sub(prev) > umbralHueco(intervaloSeg) {
+			motivo := "suspendido"
+			if primeraVuelta {
+				motivo = "apagado"
+			}
+			actAcc.RegistrarHueco(prev, ahora, motivo)
+		}
+	}
+	actAcc.UltimaMuestra = ahora.Unix()
+}
+
+// olvidarUltimaMuestra: con el monitoreo apagado no hay hueco que medir al
+// volver a encenderlo.
+func (a *Agent) olvidarUltimaMuestra() {
+	actAccMu.Lock()
+	defer actAccMu.Unlock()
+	if actAcc.UltimaMuestra != 0 {
+		actAcc.UltimaMuestra = 0
+		a.guardarAcumulador(actAcc)
 	}
 }
 
