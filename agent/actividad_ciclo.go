@@ -126,6 +126,8 @@ func (a *Agent) subirResumenActividad(res rmm.ActividadResumen) error {
 // BucleActividad es la goroutine de muestreo. No termina nunca: el ticker sigue
 // y el interruptor se re-evalúa en cada tick (mismo criterio que el ticker de geo).
 func (a *Agent) BucleActividad(nc *nats.Conn) {
+	a.retirarActividad048()
+
 	actAccMu.Lock()
 	actAcc = a.cargarAcumulador()
 	actAccMu.Unlock()
