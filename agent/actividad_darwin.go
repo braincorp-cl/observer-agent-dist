@@ -7,12 +7,11 @@ package agent
 // instalables: no es el problema de egress de Linux):
 //   - Proceso activo: `lsappinfo front` + `lsappinfo info -only executablepath`.
 //   - Inactividad: `ioreg -c IOHIDSystem` → HIDIdleTime (nanosegundos).
-// El TÍTULO de la ventana y el estado de bloqueo exigen permisos TCC (Accesibilidad)
-// y se dejan para una iteración con perfil PPPC; en 049-A se omiten con una nota.
+//   - Bloqueo: `ioreg -n Root -d1` → CGSSessionScreenIsLocked de la sesión de consola.
+// El TÍTULO de la ventana exige Accesibilidad (TCC) y se omite con una nota.
 
 import (
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,21 +47,20 @@ func procesoActivoDarwin() string {
 	if err != nil {
 		return ""
 	}
-	// Formato: "LSExecutablePath"="/Applications/Foo.app/Contents/MacOS/Foo"
-	s := string(out)
-	i := strings.Index(s, "=")
-	if i < 0 {
-		return ""
+	return procesoDesdeLsappinfo(string(out))
+}
+
+// pantallaBloqueadaDarwin: sesión de consola con la pantalla bloqueada (sin TCC).
+func pantallaBloqueadaDarwin() bool {
+	out, err := exec.Command("ioreg", "-n", "Root", "-d1").Output()
+	if err != nil {
+		return false
 	}
-	ruta := strings.Trim(strings.TrimSpace(s[i+1:]), "\"")
-	if ruta == "" {
-		return ""
-	}
-	return strings.ToLower(filepath.Base(ruta))
+	return bloqueadoDesdeIoreg(string(out))
 }
 
 func muestraActividadImpl(conTitulo bool) rmm.ActividadMuestra {
-	m := rmm.ActividadMuestra{SO: "macos", Sesion: "aqua", IdleSeg: idleSegundosDarwin()}
+	m := rmm.ActividadMuestra{SO: "macos", Sesion: "aqua", IdleSeg: idleSegundosDarwin(), Bloqueado: pantallaBloqueadaDarwin()}
 	if p := procesoActivoDarwin(); p != "" {
 		m.Proceso = p
 	} else {
