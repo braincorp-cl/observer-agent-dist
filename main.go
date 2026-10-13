@@ -122,6 +122,10 @@ func main() {
 		// Feature 049: muestra instantánea de actividad. Corre como el usuario
 		// (self-exec). flag.Arg(0) == "titulo" pide además el título de la ventana.
 		agent.ModoActividadMuestra(flag.Arg(0) == "titulo")
+	case "actividad-entrada":
+		// 049-E (Windows): ayudante en la sesión del usuario que sólo cuenta
+		// teclas y eventos de mouse; lo lanza y supervisa el servicio.
+		agent.ModoActividadEntrada()
 	case "geolocation":
 		// Diagnóstico: resuelve y muestra la ubicación con la config vigente.
 		a.RunGeolocation()

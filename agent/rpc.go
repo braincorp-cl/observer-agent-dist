@@ -763,6 +763,16 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
+		case "actividad_captura":
+			go func() {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// 049-E: captura del momento para el monitoreo en vivo. Responde
+				// cuando la imagen ya subió (o el motivo por el que no se tomó).
+				ret.Encode(map[string]string{"estado": a.CapturaBajoDemanda()})
+				msg.Respond(resp)
+			}()
+
 		case "actividad_monitor":
 			go func(p *NatsMsg) {
 				var resp []byte

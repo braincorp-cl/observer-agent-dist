@@ -144,6 +144,8 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 	// hueco desde la última muestra persistida = equipo apagado).
 	var recientes []muestraReciente
 	primeraVuelta := true
+	// 049-E: lectura anterior de los contadores de teclas y mouse.
+	var lector lectorEntrada
 
 	for {
 		select {
@@ -156,9 +158,12 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 			active, interval, inactivo, conTitulo := a.getActividad()
 			if !active {
 				recientes = nil
+				lector = lectorEntrada{}
+				a.entradaDetener()
 				a.olvidarUltimaMuestra()
 				continue
 			}
+			a.entradaIniciar()
 			ahora := time.Now()
 			a.anotarHueco(ahora, interval, primeraVuelta)
 			primeraVuelta = false
@@ -177,8 +182,19 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 				fotoRed = muestraRedPorApp()
 			}
 
+			// Con la sesión bloqueada no se atribuye tiempo a la app de bloqueo.
+			proc, tit, url := m.Proceso, m.Titulo, m.URL
+			if m.Bloqueado {
+				proc, tit, url = "", "", ""
+			}
+			dTeclas, dMouse := lector.delta(entradaAcumulada(m))
+
 			actAccMu.Lock()
-			actAcc.Agregar(ahora, m.Usuario, m.Proceso, m.Titulo, activo, interval)
+			actAcc.Agregar(ahora, m.Usuario, proc, tit, activo, interval)
+			actAcc.AgregarURL(ahora, m.Usuario, url, activo, interval)
+			if !m.Bloqueado {
+				actAcc.AgregarEntrada(ahora, m.Usuario, dTeclas, dMouse)
+			}
 			actAcc.AgregarRed(ahora, m.Usuario, fotoRed, interval)
 			if ev.conEntrada {
 				actAcc.RegistrarEntrada(ahora, m.Usuario, ahora.Add(-time.Duration(ev.idleEntrada)*time.Second))
@@ -216,9 +232,9 @@ func (a *Agent) BucleActividad(nc *nats.Conn) {
 // --- 049-D -------------------------------------------------------------------
 
 type muestraReciente struct {
-	ts                       time.Time
-	usuario, proceso, titulo string
-	intervalo                int
+	ts                            time.Time
+	usuario, proceso, titulo, url string
+	intervalo                     int
 }
 
 type evaluacion struct {
@@ -264,12 +280,13 @@ func reclasificarRecientes(ac *AcumuladorActividad, recientes []muestraReciente,
 		for _, r := range recientes {
 			if r.usuario == m.Usuario && r.ts.After(ultima) && r.ts.Format("2006-01-02") == hoy {
 				ac.Reclasificar(r.ts, r.usuario, r.proceso, r.titulo, r.intervalo)
+				ac.ReclasificarURL(r.ts, r.usuario, r.url, r.intervalo)
 			}
 		}
 		return nil
 	}
 	if ev.activo && !ev.forzado {
-		recientes = append(recientes, muestraReciente{ts: ahora, usuario: m.Usuario, proceso: m.Proceso, titulo: m.Titulo, intervalo: intervalo})
+		recientes = append(recientes, muestraReciente{ts: ahora, usuario: m.Usuario, proceso: m.Proceso, titulo: m.Titulo, url: m.URL, intervalo: intervalo})
 	}
 	// Sólo puede reclasificarse lo que está dentro del umbral.
 	limite := ahora.Add(-time.Duration(inactivoSeg+2*intervalo) * time.Second)

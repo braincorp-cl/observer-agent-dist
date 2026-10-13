@@ -76,54 +76,66 @@ func aJPEGReducido(data []byte) ([]byte, string) {
 // capturaActividad toma, reduce y sube una captura. Corre en su goroutine; si
 // ya hay una en curso, no apila otra.
 func (a *Agent) capturaActividad(m rmm.ActividadMuestra) {
+	a.capturaActividadModo(m, false)
+}
+
+// capturaActividadModo devuelve el resultado para la captura bajo demanda
+// (049-E): "ok", "en_curso", "sin_imagen", "capturas_off" o "error".
+func (a *Agent) capturaActividadModo(m rmm.ActividadMuestra, manual bool) string {
 	if !capturaActEnCurso.CompareAndSwap(false, true) {
-		return
+		return "en_curso"
 	}
 	defer capturaActEnCurso.Store(false)
 
 	shot := a.CaptureScreen()
 	if !shot.OK() {
 		a.Logger.Debugln("actividad: captura sin imagen:", shot.Reason)
-		return
+		return "sin_imagen"
 	}
 	defer os.Remove(shot.Path)
 
 	data, err := os.ReadFile(shot.Path)
 	if err != nil || len(data) == 0 {
-		return
+		return "sin_imagen"
 	}
 	img, ext := aJPEGReducido(data)
 	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("obs-act-%d.%s", time.Now().UnixNano(), ext))
 	if err := os.WriteFile(tmp, img, 0600); err != nil {
-		return
+		return "error"
 	}
 	defer os.Remove(tmp)
 
+	campos := map[string]string{
+		"usuario": m.Usuario,
+		"proceso": m.Proceso,
+		"titulo":  strings.TrimSpace(m.Titulo),
+		"url":     m.URL,
+	}
+	if manual {
+		campos["manual"] = "1"
+	}
+
 	ts := time.Now()
+	campos["captured_at"] = ts.Format(time.RFC3339)
 	url := fmt.Sprintf("/api/v3/%s/activity/screenshot/", a.AgentID)
 	r, err := a.rClient.R().
-		SetFormData(map[string]string{
-			"captured_at": ts.Format(time.RFC3339),
-			"usuario":     m.Usuario,
-			"proceso":     m.Proceso,
-			"titulo":      strings.TrimSpace(m.Titulo),
-		}).
+		SetFormData(campos).
 		SetFile("image", tmp).
 		Post(url)
 	if err != nil {
 		a.Logger.Debugln("actividad: no se pudo subir la captura:", err)
-		return
+		return "error"
 	}
 	if r.StatusCode() == http.StatusConflict {
 		// El servidor ya no quiere capturas de este equipo (se apagaron mientras
 		// estaba sin red): se apagan acá sin esperar al polling de config.
 		_, red := a.getActividadExtras()
 		a.SetActividadExtras(0, red)
-		return
+		return "capturas_off"
 	}
 	if r.StatusCode() >= 300 {
 		a.Logger.Debugln("actividad: el servidor rechazó la captura:", r.StatusCode())
-		return
+		return "error"
 	}
 	actAccMu.Lock()
 	if actAcc != nil {
@@ -131,4 +143,35 @@ func (a *Agent) capturaActividad(m rmm.ActividadMuestra) {
 		a.guardarAcumulador(actAcc)
 	}
 	actAccMu.Unlock()
+	return "ok"
+}
+
+// CapturaBajoDemanda (049-E, RPC `actividad_captura`): la consola pide una
+// captura del momento para el monitoreo en vivo. Respeta lo mismo que la
+// periódica: monitoreo y capturas encendidos, sesión con usuario y desbloqueada.
+func (a *Agent) CapturaBajoDemanda() string {
+	active, _, _, conTitulo := a.getActividad()
+	capturasMin, _ := a.getActividadExtras()
+	if !active {
+		return "monitoreo_off"
+	}
+	if capturasMin <= 0 {
+		return "capturas_off"
+	}
+	m, err := a.MuestraActividadComoUsuario(conTitulo)
+	if err != nil {
+		return "sin_sesion"
+	}
+	return motivoCapturaManual(m, func() string { return a.capturaActividadModo(m, true) })
+}
+
+// motivoCapturaManual decide sin tocar la pantalla si corresponde capturar.
+func motivoCapturaManual(m rmm.ActividadMuestra, capturar func() string) string {
+	if m.Error != "" || m.Usuario == "" {
+		return "sin_sesion"
+	}
+	if m.Bloqueado {
+		return "bloqueado"
+	}
+	return capturar()
 }

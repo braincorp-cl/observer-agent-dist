@@ -17,7 +17,8 @@ import (
 
 const (
 	topProcsResumen   = 25
-	topHoraResumen    = 5
+	topHoraResumen    = 15 // 049-E: 15 para filtrar por horario laboral con poco error
+	topUrlsResumen    = 25
 	topTitulosResumen = 10
 	// 049-D
 	tramosPorDia = 144 // tramos de 10 min
@@ -50,6 +51,15 @@ type usuarioAcc struct {
 	PrimerEntrada int64          `json:"primer_entrada,omitempty"`
 	UltimaEntrada int64          `json:"ultima_entrada,omitempty"`
 	Pausas        [][2]int64     `json:"pausas,omitempty"`
+	// 049-E: segundos inactivos con el proceso/sitio/URL en primer plano,
+	// segundos por URL activa y conteos de entrada (día y tramo -> [teclas, mouse]).
+	ProcsI  map[string]int `json:"procs_i,omitempty"`
+	SitiosI map[string]int `json:"sitios_i,omitempty"`
+	Urls    map[string]int `json:"urls,omitempty"`
+	UrlsI   map[string]int `json:"urls_i,omitempty"`
+	Teclas  int            `json:"teclas,omitempty"`
+	Mouse   int            `json:"mouse,omitempty"`
+	Entrada map[int][2]int `json:"entrada,omitempty"`
 }
 
 type huecoAcc struct {
@@ -94,6 +104,16 @@ func restar(m map[string]int, k string, v int) {
 	if m[k] -= v; m[k] <= 0 {
 		delete(m, k)
 	}
+}
+
+func sumar(m *map[string]int, k string, v int) {
+	if k == "" || v <= 0 {
+		return
+	}
+	if *m == nil {
+		*m = map[string]int{}
+	}
+	(*m)[k] += v
 }
 
 func nuevoAcumulador(equipo, so, tz string) *AcumuladorActividad {
@@ -159,7 +179,71 @@ func (ac *AcumuladorActividad) Agregar(ts time.Time, usuario, proceso, titulo st
 	} else {
 		u.Inactivo += intervaloSeg
 		h.I += intervaloSeg
+		// 049-E: el tiempo sin uso también se atribuye a la app que quedó al
+		// frente (el ciclo pasa proceso "" con la sesión bloqueada).
+		if procesoReal(proceso) {
+			sumar(&u.ProcsI, proceso, intervaloSeg)
+			if titulo != "" {
+				sumar(&u.SitiosI, sitioDeTitulo(proceso, titulo), intervaloSeg)
+			}
+		}
 	}
+}
+
+func (ac *AcumuladorActividad) usuarioDe(ts time.Time, usuario string) *usuarioAcc {
+	return ac.Dias[ts.Format("2006-01-02")][usuario]
+}
+
+// AgregarURL suma la URL de la pestaña activa (049-E). Va aparte de Agregar
+// porque sólo existe con un navegador al frente; se llama DESPUÉS de Agregar.
+func (ac *AcumuladorActividad) AgregarURL(ts time.Time, usuario, url string, activo bool, intervaloSeg int) {
+	u := ac.usuarioDe(ts, usuario)
+	if u == nil || url == "" {
+		return
+	}
+	if activo {
+		sumar(&u.Urls, url, intervaloSeg)
+	} else {
+		sumar(&u.UrlsI, url, intervaloSeg)
+	}
+}
+
+// ReclasificarURL mueve la URL de una muestra re-etiquetada de activa a inactiva.
+func (ac *AcumuladorActividad) ReclasificarURL(ts time.Time, usuario, url string, intervaloSeg int) {
+	u := ac.usuarioDe(ts, usuario)
+	if u == nil || url == "" || u.Urls[url] <= 0 {
+		return
+	}
+	seg := intervaloSeg
+	if seg > u.Urls[url] {
+		seg = u.Urls[url]
+	}
+	restar(u.Urls, url, seg)
+	sumar(&u.UrlsI, url, seg)
+}
+
+// AgregarEntrada suma teclas y eventos de mouse ocurridos desde la muestra
+// anterior (049-E). Sólo conteos: el agente nunca registra qué tecla fue.
+func (ac *AcumuladorActividad) AgregarEntrada(ts time.Time, usuario string, teclas, mouse int) {
+	u := ac.usuarioDe(ts, usuario)
+	if u == nil || (teclas <= 0 && mouse <= 0) {
+		return
+	}
+	if teclas < 0 {
+		teclas = 0
+	}
+	if mouse < 0 {
+		mouse = 0
+	}
+	u.Teclas += teclas
+	u.Mouse += mouse
+	if u.Entrada == nil {
+		u.Entrada = map[int][2]int{}
+	}
+	e := u.Entrada[tramoDe(ts)]
+	e[0] += teclas
+	e[1] += mouse
+	u.Entrada[tramoDe(ts)] = e
 }
 
 // Reclasificar pasa a inactiva una muestra que se contó activa (049-D). Lo usa
@@ -189,9 +273,14 @@ func (ac *AcumuladorActividad) Reclasificar(ts time.Time, usuario, proceso, titu
 		restar(h.P, proceso, seg)
 	}
 	restar(u.Procs, proceso, seg)
+	if procesoReal(proceso) {
+		sumar(&u.ProcsI, proceso, seg)
+	}
 	if titulo != "" {
 		restar(u.Titulos, titulo, seg)
-		restar(u.Sitios, sitioDeTitulo(proceso, titulo), seg)
+		sitio := sitioDeTitulo(proceso, titulo)
+		restar(u.Sitios, sitio, seg)
+		sumar(&u.SitiosI, sitio, seg)
 	}
 	if tr, ok := u.Tramos[tramoDe(ts)]; ok {
 		tr[0] -= seg
@@ -331,6 +420,13 @@ func (ac *AcumuladorActividad) ResumenDe(fecha string, parcial bool) (rmm.Activi
 			PrimerActivo: horaMin(u.PrimerEntrada),
 			UltimoActivo: horaMin(u.UltimaEntrada),
 			Pausas:       resumenIntervalos(u.Pausas),
+			ProcsI:       topMapMin(u.ProcsI, topProcsResumen),
+			SitiosI:      topMapMin(u.SitiosI, topSitiosResumen),
+			Urls:         topMapMin(u.Urls, topUrlsResumen),
+			UrlsI:        topMapMin(u.UrlsI, topUrlsResumen),
+			Teclas:       u.Teclas,
+			Mouse:        u.Mouse,
+			Entrada:      resumenTramos(u.Entrada),
 		})
 	}
 	for _, h := range ac.Huecos[fecha] {
@@ -367,7 +463,7 @@ func resumenTramos(m map[int][2]int) map[string][2]int {
 	}
 	out := make(map[string][2]int, len(m))
 	for i, v := range m {
-		if i >= 0 && i < tramosPorDia && v[1] > 0 {
+		if i >= 0 && i < tramosPorDia && (v[0] > 0 || v[1] > 0) {
 			out[strconv.Itoa(i)] = v
 		}
 	}

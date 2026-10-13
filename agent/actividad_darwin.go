@@ -66,6 +66,10 @@ func muestraActividadImpl(conTitulo bool) rmm.ActividadMuestra {
 	} else {
 		m.Proceso = "(desconocido)"
 	}
+	// 049-E: conteo acumulado de teclas y mouse (sólo cantidades).
+	if t, mo, ok := contadoresEntradaDarwin(); ok {
+		m.TeclasAcum, m.MouseAcum, m.EntradaAcum = t, mo, true
+	}
 	if conTitulo {
 		// El título requiere Accesibilidad (TCC); se omite en 049-A.
 		m.Nota = "macos: título de ventana requiere permiso de Accesibilidad (TCC)"

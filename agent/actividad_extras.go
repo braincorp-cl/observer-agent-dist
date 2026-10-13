@@ -34,7 +34,7 @@ const (
 var navegadores = map[string]bool{
 	"chrome": true, "google chrome": true, "chromium": true, "chromium-browser": true,
 	"msedge": true, "microsoft edge": true, "firefox": true, "firefox-esr": true,
-	"brave": true, "brave-browser": true, "opera": true, "vivaldi": true,
+	"brave": true, "brave-browser": true, "brave browser": true, "opera": true, "vivaldi": true, "vivaldi-bin": true,
 	"safari": true, "arc": true, "librewolf": true, "waterfox": true, "yandex": true,
 }
 

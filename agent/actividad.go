@@ -31,6 +31,10 @@ func MuestraActividad(conTitulo bool) rmm.ActividadMuestra {
 			m.Usuario = u.Username
 		}
 	}
+	// 049-E: la URL va con el mismo interruptor que los títulos.
+	if conTitulo && !m.Bloqueado && esNavegador(m.Proceso) {
+		m.URL = urlActiva(m.Proceso, m.Titulo)
+	}
 	return m
 }
 

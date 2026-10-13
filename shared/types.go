@@ -1136,6 +1136,13 @@ type ActividadMuestra struct {
 	Bloqueado bool   `json:"bloqueado"`      // sesión bloqueada / salvapantallas activo
 	Nota      string `json:"nota,omitempty"` // p. ej. "wayland: ventana activa no disponible"
 	Error     string `json:"error,omitempty"`
+	// 049-E: URL (dominio + ruta) de la pestaña activa, deducida del historial
+	// del navegador; contadores ACUMULADOS de teclas y eventos de mouse cuando el
+	// SO los da en la sesión (macOS). Sólo cuentan: nunca qué se tecleó.
+	URL         string `json:"url,omitempty"`
+	TeclasAcum  uint64 `json:"teclas_acum,omitempty"`
+	MouseAcum   uint64 `json:"mouse_acum,omitempty"`
+	EntradaAcum bool   `json:"entrada_acum,omitempty"`
 }
 
 // --- Feature 049 · resumen de actividad que sube el agente -------------------
@@ -1170,6 +1177,16 @@ type ActividadUsuario struct {
 	PrimerActivo string            `json:"primer_activo,omitempty"`
 	UltimoActivo string            `json:"ultimo_activo,omitempty"`
 	Pausas       [][2]string       `json:"pausas,omitempty"`
+	// 049-E: minutos INACTIVOS con el proceso/sitio en primer plano; minutos
+	// por URL (dominio + ruta) activos e inactivos; teclas y eventos de mouse
+	// del día y por tramo ("0".."143" -> [teclas, mouse]). Sólo conteos.
+	ProcsI  map[string]int    `json:"procs_i,omitempty"`
+	SitiosI map[string]int    `json:"sitios_i,omitempty"`
+	Urls    map[string]int    `json:"urls,omitempty"`
+	UrlsI   map[string]int    `json:"urls_i,omitempty"`
+	Teclas  int               `json:"teclas,omitempty"`
+	Mouse   int               `json:"mouse,omitempty"`
+	Entrada map[string][2]int `json:"entrada,omitempty"`
 }
 
 // ActividadHueco: tramo del día sin muestreo con el monitoreo encendido (049-D).
