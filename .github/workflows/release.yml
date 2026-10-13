@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ensure release-notes/<tag>.md exists and is not a stub
         run: |
@@ -61,7 +61,7 @@ jobs:
             goarch: arm
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Linux va por el FLUJO MODERNO (T018 / ADR-023 §7): Go 1.21+ sólo pide
       # kernel Linux 3.2+ (2012), así que aquí no hay flota vieja que sostener
@@ -69,7 +69,7 @@ jobs:
       # vulnerabilidades alcanzables de la stdlib medidas con 1.20.x — vienen
       # del compilador, no de go.mod, así que se cierran sin tocar una sola
       # dependencia. El doble flujo es EXCLUSIVAMENTE por Windows.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
 
@@ -91,7 +91,7 @@ jobs:
           echo "BINARY=${BINARY}" >> $GITHUB_ENV
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BINARY }}
           path: ${{ env.BINARY }}
@@ -121,9 +121,9 @@ jobs:
         goarch: [amd64, arm64]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
 
@@ -162,7 +162,7 @@ jobs:
             || { echo "::error::identificador de firma incorrecto"; exit 1; }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BINARY }}
           path: ${{ env.BINARY }}
@@ -193,7 +193,7 @@ jobs:
       matrix:
         goarch: [amd64, "386"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set version
         id: version
@@ -205,7 +205,7 @@ jobs:
       # clavado ahí: este flujo es de COMPATIBILIDAD, no de seguridad (ADR-023 §8).
       # Las ~39 vulnerabilidades alcanzables de la stdlib siguen vivas en este
       # binario — deuda aceptada y documentada, no un pendiente.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.20.14'
 
@@ -224,7 +224,7 @@ jobs:
       # tocar una sola dependencia, porque vienen del compilador y no de go.mod.
       # ⚠️ NO subir a 1.27: exige macOS 13 Ventura y el repo no declara mínimo de
       # macOS, así que recortaría la flota soportada en silencio (W-GOT-11).
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
 
@@ -383,7 +383,7 @@ jobs:
       # de Python. El día que aparezca un asset con sufijo de variante (-legacy,
       # -win7, -modern) revive la clase de falla del brick.
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: observeragent-${{ github.ref_name }}-windows-${{ matrix.goarch }}
           path: installer_out/observeragent-${{ github.ref_name }}-windows-${{ matrix.goarch }}.exe
@@ -398,16 +398,16 @@ jobs:
     steps:
       # El checkout es solo para poder leer release-notes/<tag>.md: este job antes
       # no clonaba el repo porque le bastaban los artifacts.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: binaries
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: binaries/*
           # El cuerpo sale del archivo versionado, NO de generate_release_notes
